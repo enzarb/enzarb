@@ -1,0 +1,243 @@
+[
+	{
+		"id": "review-pull-requests",
+		"title": "Review pull requests",
+		"description": "Comment a code review on every pull request that is opened or updated.",
+		"modes": [
+			{
+				"id": "reviewer",
+				"description": "Reviews a pull request",
+				"prompt": "Review the change for correctness, tests and clarity. Be specific and brief. Do not edit files.",
+				"tools": ["Read", "Glob", "Grep"],
+				"miseTasks": [],
+				"mcpTools": [],
+				"next": [],
+				"autoAdvanceTo": [],
+				"permissions": {},
+				"hooks": {}
+			}
+		],
+		"defaultMode": "reviewer",
+		"workflow": {
+			"description": "Review pull requests",
+			"on": ["pull_request.opened", "pull_request.synchronize"],
+			"start": "review",
+			"nodes": {
+				"review": {
+					"type": "agent",
+					"mode": "reviewer",
+					"instruction": "Review pull request #{{ event.pull_request.number }}: {{ event.pull_request.title }}\n\n{{ event.pull_request.body }}",
+					"result": {
+						"summary": {
+							"type": "string"
+						}
+					},
+					"next": "comment"
+				},
+				"comment": {
+					"type": "action",
+					"action": "comment",
+					"body": "{{ nodes.review.result.summary }}",
+					"next": "done"
+				},
+				"done": {
+					"type": "end",
+					"status": "done"
+				}
+			}
+		}
+	},
+	{
+		"id": "triage-issues",
+		"title": "Triage new issues",
+		"description": "Label each new issue and comment a short summary.",
+		"modes": [
+			{
+				"id": "triager",
+				"description": "Understands and summarises an issue",
+				"prompt": "Read the issue and the code it concerns. Summarise it in two or three sentences and say what it needs.",
+				"tools": ["Read", "Glob", "Grep"],
+				"miseTasks": [],
+				"mcpTools": [],
+				"next": [],
+				"autoAdvanceTo": [],
+				"permissions": {},
+				"hooks": {}
+			}
+		],
+		"defaultMode": "triager",
+		"workflow": {
+			"description": "Triage new issues",
+			"on": ["issues.opened"],
+			"start": "triage",
+			"nodes": {
+				"triage": {
+					"type": "agent",
+					"mode": "triager",
+					"instruction": "Issue #{{ event.issue.number }}: {{ event.issue.title }}\n\n{{ event.issue.body }}",
+					"result": {
+						"summary": {
+							"type": "string"
+						}
+					},
+					"next": "label"
+				},
+				"label": {
+					"type": "action",
+					"action": "add_labels",
+					"labels": ["triage"],
+					"next": "comment"
+				},
+				"comment": {
+					"type": "action",
+					"action": "comment",
+					"body": "{{ nodes.triage.result.summary }}",
+					"next": "done"
+				},
+				"done": {
+					"type": "end",
+					"status": "done"
+				}
+			}
+		}
+	},
+	{
+		"id": "implement-labeled-issues",
+		"title": "Implement labeled issues",
+		"description": "When an issue gets the ez label, plan the fix, implement it and open a pull request.",
+		"modes": [
+			{
+				"id": "planner",
+				"description": "Plans a change",
+				"prompt": "Read the issue and the code and write a short plan. Do not edit files.",
+				"tools": ["Read", "Glob", "Grep"],
+				"miseTasks": [],
+				"mcpTools": [],
+				"next": [],
+				"autoAdvanceTo": [],
+				"permissions": {},
+				"hooks": {}
+			},
+			{
+				"id": "implementer",
+				"description": "Makes the change",
+				"prompt": "Implement the plan with small, tested changes.",
+				"tools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
+				"miseTasks": ["test*"],
+				"mcpTools": [],
+				"next": [],
+				"autoAdvanceTo": [],
+				"permissions": {},
+				"hooks": {}
+			}
+		],
+		"defaultMode": "planner",
+		"workflow": {
+			"description": "Implement issues labelled ez and open a pull request",
+			"on": ["issues.labeled"],
+			"if": "event.label.name == 'ez'",
+			"start": "plan",
+			"nodes": {
+				"plan": {
+					"type": "agent",
+					"mode": "planner",
+					"instruction": "Issue #{{ event.issue.number }}: {{ event.issue.title }}\n\n{{ event.issue.body }}",
+					"result": {
+						"plan": {
+							"type": "string"
+						}
+					},
+					"next": "implement"
+				},
+				"implement": {
+					"type": "agent",
+					"mode": "implementer",
+					"instruction": "Implement issue #{{ event.issue.number }}. Plan: {{ nodes.plan.result.plan }}",
+					"push": true,
+					"next": [
+						{
+							"if": "git.pushed",
+							"to": "open_pr"
+						},
+						{
+							"to": "failed"
+						}
+					]
+				},
+				"open_pr": {
+					"type": "action",
+					"action": "open_pull_request",
+					"title": "Fix #{{ event.issue.number }}: {{ event.issue.title }}",
+					"body": "Closes #{{ event.issue.number }}",
+					"next": "done"
+				},
+				"done": {
+					"type": "end",
+					"status": "done"
+				},
+				"failed": {
+					"type": "end",
+					"status": "failed"
+				}
+			}
+		}
+	},
+	{
+		"id": "fix-failing-ci",
+		"title": "Fix failing CI",
+		"description": "When a CI run fails, try a fix and open a pull request.",
+		"modes": [
+			{
+				"id": "ci-fixer",
+				"description": "Fixes a failing CI run",
+				"prompt": "Find why the CI run failed, fix the cause with the smallest change and run the tests.",
+				"tools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
+				"miseTasks": ["test*"],
+				"mcpTools": [],
+				"next": [],
+				"autoAdvanceTo": [],
+				"permissions": {},
+				"hooks": {}
+			}
+		],
+		"defaultMode": "ci-fixer",
+		"workflow": {
+			"description": "Fix failing CI runs",
+			"on": ["workflow_run.completed"],
+			"if": "event.workflow_run.conclusion == 'failure'",
+			"start": "fix",
+			"nodes": {
+				"fix": {
+					"type": "agent",
+					"mode": "ci-fixer",
+					"instruction": "The CI run {{ event.workflow_run.name }} failed on {{ event.workflow_run.head_branch }}. See {{ event.workflow_run.html_url }}.",
+					"push": true,
+					"next": [
+						{
+							"if": "git.pushed",
+							"to": "open_pr"
+						},
+						{
+							"to": "failed"
+						}
+					]
+				},
+				"open_pr": {
+					"type": "action",
+					"action": "open_pull_request",
+					"title": "Fix failing {{ event.workflow_run.name }}",
+					"body": "Fixes {{ event.workflow_run.html_url }}",
+					"next": "done"
+				},
+				"done": {
+					"type": "end",
+					"status": "done"
+				},
+				"failed": {
+					"type": "end",
+					"status": "failed"
+				}
+			}
+		}
+	}
+]

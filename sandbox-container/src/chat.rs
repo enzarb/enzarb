@@ -485,10 +485,24 @@ impl ChatManager {
     /// `welcome.features`: `["acp"]` when chat is enabled.
     pub fn features(&self) -> Vec<String> {
         if self.enabled() {
-            vec![feature::ACP.to_string()]
+            vec![
+                feature::ACP.to_string(),
+                feature::FILE_READ_CHAT.to_string(),
+            ]
         } else {
             Vec::new()
         }
+    }
+
+    /// The worktree (`worktrees/chat-<id>`) of the chat live on `mux_session`,
+    /// if any. `file_read` resolves relative paths against it.
+    pub fn worktree_of(&self, mux_session: u64) -> Option<PathBuf> {
+        let st = self.state.lock().unwrap();
+        st.live
+            .iter()
+            .find(|l| l.mux_session == mux_session && !l.closing.load(Ordering::SeqCst))
+            .and_then(|l| l.chat_id.as_deref())
+            .map(|id| self.worktrees_dir().join(format!("chat-{id}")))
     }
 
     /// Number of chats starting or live.

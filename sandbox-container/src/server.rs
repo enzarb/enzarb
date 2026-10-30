@@ -230,6 +230,7 @@ async fn session_loop(state: Arc<AppState>, socket: WebSocket) {
                 features: {
                     let mut f = state.chats.features();
                     f.push(feature::STATS.to_string());
+                    f.push(feature::FILE_READ.to_string());
                     f.push(feature::STEPS.to_string());
                     f
                 },
@@ -329,6 +330,23 @@ async fn session_loop(state: Arc<AppState>, socket: WebSocket) {
                         };
                     if let Err(e) = session.send_ctrl(&Ctrl::Stats(stats)) {
                         tracing::debug!(session = id, error = %e, "stats send failed");
+                    }
+                });
+            }
+            // A few KiB at most, off the event loop; the reply carries failures.
+            Event::Ctrl(Ctrl::FileRead { id: rid, path }) => {
+                let root = state.config.workspace.clone();
+                let base = state.chats.worktree_of(id);
+                let session = session.clone();
+                tasks.spawn(async move {
+                    let reply = tokio::task::spawn_blocking(move || {
+                        crate::file_read::read(&root, base.as_deref(), rid, path)
+                    })
+                    .await;
+                    if let Ok(reply) = reply
+                        && let Err(e) = session.send_ctrl(&reply)
+                    {
+                        tracing::debug!(session = id, error = %e, "file send failed");
                     }
                 });
             }

@@ -54,6 +54,19 @@ function fakeApi(over: Partial<DesignerApi> = {}): DesignerApi {
 
 const commit = () => page.getByRole('button', { name: 'Commit to main' });
 
+describe('ModeForm basic/advanced split', () => {
+	it('keeps the extras inside a collapsed Advanced section', async () => {
+		render(ModesDesigner, { file: file(), api: fakeApi(), saved: vi.fn() });
+		await expect.element(page.getByRole('textbox', { name: 'Prompt' })).toBeVisible();
+		await expect.element(page.getByRole('textbox', { name: 'Model' })).toBeVisible();
+		const adv = page.getByText('Advanced', { exact: true });
+		await expect.element(adv).toBeVisible();
+		await expect.element(page.getByRole('textbox', { name: 'Profile' })).not.toBeInTheDocument();
+		await adv.click();
+		await expect.element(page.getByRole('textbox', { name: 'Profile' })).toBeVisible();
+	});
+});
+
 describe('ModesDesigner', () => {
 	it('lists the modes, edits the selected one and saves the document', async () => {
 		const api = fakeApi();

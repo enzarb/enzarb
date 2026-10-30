@@ -31,16 +31,23 @@ export interface FakeSandboxOptions {
 	reply?: string;
 	/** Answer chat opens like a proxy whose user has no Claude token (`open_error{no_credential}`). */
 	noCredential?: boolean;
+	/** Files the sandbox serves to `file_read`, by path as requested (others answer `not_found`). */
+	files?: Record<string, string>;
 }
 
 /** Serve the sandbox mux websocket of every project on `page`. */
 export async function installFakeSandbox(page: Page, opts: FakeSandboxOptions = {}): Promise<void> {
 	await page.routeWebSocket(SANDBOX_MUX_URL, (ws) =>
-		serve(ws, opts.reply ?? AGENT_REPLY, opts.noCredential ?? false)
+		serve(ws, opts.reply ?? AGENT_REPLY, opts.noCredential ?? false, opts.files ?? {})
 	);
 }
 
-function serve(ws: WebSocketRoute, reply: string, noCredential: boolean): void {
+function serve(
+	ws: WebSocketRoute,
+	reply: string,
+	noCredential: boolean,
+	files: Record<string, string>
+): void {
 	const send = (f: Frame) => ws.send(Buffer.from(encodeFrame(f)));
 	const fail = (code: string, message: string) => send(ctrlFrame({ type: 'error', code, message }));
 
@@ -68,7 +75,13 @@ function serve(ws: WebSocketRoute, reply: string, noCredential: boolean): void {
 					return;
 				}
 				welcomed = true;
-				send(ctrlFrame({ type: 'welcome', version, features: [Feature.Acp] }));
+				send(
+					ctrlFrame({
+						type: 'welcome',
+						version,
+						features: [Feature.Acp, Feature.FileRead, Feature.FileReadChat]
+					})
+				);
 				return;
 			}
 			case 'open':
@@ -96,6 +109,23 @@ function serve(ws: WebSocketRoute, reply: string, noCredential: boolean): void {
 				}
 				openAcp(msg.channel);
 				return;
+			case 'file_read': {
+				const content = files[msg.path];
+				send(
+					ctrlFrame(
+						content === undefined
+							? {
+									type: 'file',
+									id: msg.id,
+									path: msg.path,
+									code: 'not_found',
+									message: 'no such file'
+								}
+							: { type: 'file', id: msg.id, path: msg.path, content }
+					)
+				);
+				return;
+			}
 			default:
 				fail(ErrorCode.Unimplemented, `the fake sandbox does not handle ${msg.type}`);
 		}

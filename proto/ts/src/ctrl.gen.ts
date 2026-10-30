@@ -56,7 +56,7 @@ legacy?: boolean | null, } | { "type": "credential_status" } | { "type": "creden
  * Whose credential this is (see [`credential_scope`]); open string.
  * Omitted when absent.
  */
-scope?: string | null, } | { "type": "stats_request" } | { "type": "stats" } & SandboxStats | { "type": "credential_clear", kind: CredentialKind, } | { "type": "error", code: string, message: string, 
+scope?: string | null, } | { "type": "stats_request" } | { "type": "stats" } & SandboxStats | { "type": "file_read", id: string, path: string, } | { "type": "file", id: string, path: string, content?: string | null, code?: string | null, message?: string | null, } | { "type": "credential_clear", kind: CredentialKind, } | { "type": "error", code: string, message: string, 
 /**
  * Run this error answers; preferred for attributing it to a pending
  * `run_start`/`run_status`. Omitted when absent.
@@ -263,6 +263,8 @@ export const CTRL_TYPES = [
   "credential_state",
   "stats_request",
   "stats",
+  "file_read",
+  "file",
   "credential_clear",
   "error",
 ] as const;

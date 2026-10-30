@@ -34,6 +34,7 @@
 </script>
 
 <div class="ez-stack">
+	<p class="ez-muted">Modes are agent presets: a prompt, tools and a model.</p>
 	<ul class="ez-modes-list" aria-label="Modes">
 		{#each modes as m, i (i)}
 			<li>

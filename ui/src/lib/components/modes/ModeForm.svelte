@@ -58,11 +58,6 @@
 			bind:value={() => mode.id, (v) => rename(v.trim())}
 			issues={issuesOf('id')}
 		/>
-		<TextField
-			label="Display name"
-			bind:value={() => mode.name ?? '', (v) => (mode.name = opt(v))}
-			issues={issuesOf('name')}
-		/>
 	</div>
 	<div class="ez-cluster">
 		{#if isDefault}
@@ -88,62 +83,70 @@
 	/>
 
 	<ToolPicker bind:tools={mode.tools} {catalog} issues={issuesOf('tools')} />
-	<ListField
-		label="Mise tasks"
-		help="One task name per line; the agent can run these as tools."
-		bind:value={mode.miseTasks}
-		issues={issuesOf('miseTasks')}
-	/>
-	<ListField
-		label="MCP tools"
-		help="One tool name or glob per line, e.g. mcp__github__*."
-		bind:value={mode.mcpTools}
-		issues={issuesOf('mcpTools')}
+	<TextField
+		label="Model"
+		help="Empty uses the profile's model."
+		bind:value={() => mode.model ?? '', (v) => (mode.model = opt(v))}
+		issues={issuesOf('model')}
 	/>
 
-	{#if others.length}
-		<FieldSet legend="Next modes">
-			{#each others as id (id)}
-				<div class="ez-cluster">
-					<Checkbox
-						label={id}
-						bind:checked={() => mode.next.includes(id), (on) => toggle('next', id, on)}
-					/>
-					<Checkbox
-						label="advance automatically"
-						bind:checked={
-							() => mode.autoAdvanceTo.includes(id), (on) => toggle('autoAdvanceTo', id, on)
-						}
-					/>
-				</div>
-			{/each}
-			{#each [...issuesOf('next'), ...issuesOf('autoAdvanceTo')] as msg, n (n)}<p
-					class="ez-field__error"
-				>
-					{msg}
-				</p>{/each}
-		</FieldSet>
-	{/if}
+	<details class="ez-advanced">
+		<summary>Advanced</summary>
+		<div class="ez-stack">
+			<TextField
+				label="Display name"
+				bind:value={() => mode.name ?? '', (v) => (mode.name = opt(v))}
+				issues={issuesOf('name')}
+			/>
+			<TextField
+				label="Profile"
+				help="Backend profile; empty uses the default."
+				bind:value={() => mode.profile ?? '', (v) => (mode.profile = opt(v))}
+				issues={issuesOf('profile')}
+			/>
+			<ListField
+				label="Mise tasks"
+				help="One task name per line; the agent can run these as tools."
+				bind:value={mode.miseTasks}
+				issues={issuesOf('miseTasks')}
+			/>
+			<ListField
+				label="MCP tools"
+				help="One tool name or glob per line, e.g. mcp__github__*."
+				bind:value={mode.mcpTools}
+				issues={issuesOf('mcpTools')}
+			/>
 
-	<div class="ez-cluster ez-cluster--end">
-		<TextField
-			label="Profile"
-			help="Backend profile; empty uses the default."
-			bind:value={() => mode.profile ?? '', (v) => (mode.profile = opt(v))}
-			issues={issuesOf('profile')}
-		/>
-		<TextField
-			label="Model"
-			help="Empty uses the profile's model."
-			bind:value={() => mode.model ?? '', (v) => (mode.model = opt(v))}
-			issues={issuesOf('model')}
-		/>
-	</div>
+			{#if others.length}
+				<FieldSet legend="Next modes">
+					{#each others as id (id)}
+						<div class="ez-cluster">
+							<Checkbox
+								label={id}
+								bind:checked={() => mode.next.includes(id), (on) => toggle('next', id, on)}
+							/>
+							<Checkbox
+								label="advance automatically"
+								bind:checked={
+									() => mode.autoAdvanceTo.includes(id), (on) => toggle('autoAdvanceTo', id, on)
+								}
+							/>
+						</div>
+					{/each}
+					{#each [...issuesOf('next'), ...issuesOf('autoAdvanceTo')] as msg, n (n)}<p
+							class="ez-field__error"
+						>
+							{msg}
+						</p>{/each}
+				</FieldSet>
+			{/if}
 
-	<PermissionsField
-		bind:permissions={mode.permissions}
-		values={catalog.permissionValues}
-		issues={issuesOf('permissions')}
-	/>
-	<HooksField bind:hooks={mode.hooks} {catalog} {issues} base="{at}.hooks" />
+			<PermissionsField
+				bind:permissions={mode.permissions}
+				values={catalog.permissionValues}
+				issues={issuesOf('permissions')}
+			/>
+			<HooksField bind:hooks={mode.hooks} {catalog} {issues} base="{at}.hooks" />
+		</div>
+	</details>
 </div>

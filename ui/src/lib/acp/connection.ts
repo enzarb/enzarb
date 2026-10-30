@@ -1,4 +1,4 @@
-import { CloseReason, Feature, MAX_RESUME_LEN, OpenErrorCode } from '@enzarb/proto';
+import { CloseReason, Feature, MAX_RESUME_LEN, OpenErrorCode, type FileReply } from '@enzarb/proto';
 import {
 	completeChatStep,
 	failChatStep,
@@ -68,6 +68,8 @@ export interface AcpSession {
 	features: ReadonlySet<string>;
 	openAcp(opts?: { repo?: string; resume?: string }): Promise<AcpChannel>;
 	closed?: Promise<unknown>;
+	/** proto's `readFile` (`file_read`); present on a real mux session, check `features` first. */
+	readFile?(path: string): Promise<FileReply>;
 }
 
 export type ConnectReport = (step: Extract<ChatStepId, 'token' | 'connect' | 'handshake'>) => void;

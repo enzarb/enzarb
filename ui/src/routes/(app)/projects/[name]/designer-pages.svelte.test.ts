@@ -11,7 +11,11 @@ const h = vi.hoisted(() => ({
 	saves: [] as { baseSha: string | null }[]
 }));
 
-vi.mock('$app/state', () => ({ page: { params: { name: 'alpha' } } }));
+vi.mock('$app/state', () => ({
+	page: { params: { name: 'alpha' }, url: new URL('http://x/?view=advanced') }
+}));
+vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
+vi.mock('#lib/chat.remote.ts', () => ({ chatConnection: vi.fn() }));
 
 function query<T>(load: () => T) {
 	return (args: unknown) => {

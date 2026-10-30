@@ -303,6 +303,20 @@ describe("ctrl", () => {
     expect(pushed).toEqual([{ type: "stats", ts_ms: 5, memory_bytes: 7, memory_limit_bytes: 9 }]);
   });
 
+  it("readFile resolves from the file reply with the same id", async () => {
+    const { s, srv } = await connected();
+    const a = s.readFile(".ez/workflows.toml");
+    const m = await srv.nextCtrl("file_read");
+    expect(m).toMatchObject({ type: "file_read", path: ".ez/workflows.toml" });
+    const b = s.readFile("../x");
+    const m2 = await srv.nextCtrl("file_read");
+    if (m.type !== "file_read" || m2.type !== "file_read") throw new Error("type");
+    srv.ctrl({ type: "file", id: m2.id, path: "../x", code: "outside_workspace", message: "no" });
+    srv.ctrl({ type: "file", id: m.id, path: ".ez/workflows.toml", content: "a = 1\n" });
+    expect(await a).toEqual({ ok: true, path: ".ez/workflows.toml", content: "a = 1\n" });
+    expect(await b).toEqual({ ok: false, path: "../x", code: "outside_workspace", message: "no" });
+  });
+
   it("credentialStatus resolves from credential_state; error rejects", async () => {
     const { s, srv } = await connected();
     const p = s.credentialStatus();

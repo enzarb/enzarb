@@ -486,6 +486,7 @@ impl Inner {
                 | Ctrl::StepResume { .. }
                 | Ctrl::CredentialStatus
                 | Ctrl::StatsRequest
+                | Ctrl::FileRead { .. }
                 | Ctrl::CredentialClear { .. }
                 | Ctrl::CredentialState { .. }),
             ) => {
@@ -598,7 +599,7 @@ impl Inner {
                 }
             }
             (Role::Client, m @ Ctrl::CredentialCaptured { .. }) => emit(Event::Ctrl(m)),
-            (Role::Client, m @ Ctrl::Stats(_)) => emit(Event::Ctrl(m)),
+            (Role::Client, m @ (Ctrl::Stats(_) | Ctrl::File { .. })) => emit(Event::Ctrl(m)),
             (Role::Client, m @ (Ctrl::SessionEvent(_) | Ctrl::StepFinished(_))) => {
                 emit(Event::Ctrl(m))
             }
