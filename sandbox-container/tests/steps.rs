@@ -501,7 +501,11 @@ async fn agent_step_without_tool_calls_is_not_continued() {
     .await;
     let (evs, fin) = collect(&mut ev, "ag-q", |_| false).await;
     let fin = fin.unwrap();
-    assert_eq!(fin.exit, "success", "{fin:?}");
+    assert_eq!(fin.exit, "failure", "{fin:?}");
+    assert_eq!(
+        fin.error.as_deref(),
+        Some("agent finished without submitting a result")
+    );
     assert_eq!(fin.result, None);
     assert_eq!(evs.iter().filter(|e| e.kind == "user").count(), 0);
 }
@@ -520,7 +524,11 @@ async fn agent_step_stops_after_a_turn_without_tool_calls() {
     .await;
     let (evs, fin) = collect(&mut ev, "ag-t", |_| false).await;
     let fin = fin.unwrap();
-    assert_eq!(fin.exit, "success", "{fin:?}");
+    assert_eq!(fin.exit, "failure", "{fin:?}");
+    assert_eq!(
+        fin.error.as_deref(),
+        Some("agent finished without submitting a result")
+    );
     assert_eq!(fin.result, None);
     assert!(
         !evs.iter()

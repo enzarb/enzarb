@@ -1352,6 +1352,12 @@ impl Inner {
                 );
             }
         }
+        // A node that declares a `result` must deliver one (ADR-0029): fail here, clearly,
+        // instead of succeeding with `result: null` and failing at a later node.
+        if result_schema.is_some() && fin.result.is_none() && fin.exit == exit::SUCCESS {
+            fin.exit = exit::FAILURE.into();
+            fin.error = Some("agent finished without submitting a result".into());
+        }
         fin
     }
 
