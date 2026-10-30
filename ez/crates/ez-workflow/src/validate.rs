@@ -129,10 +129,11 @@ impl ModeCatalog {
     }
 
     /// Whether ez offers `mcp__enzarb__submit_result` in mode `id`: its `mcp_tools` globs must
-    /// match the tool name (no `mcp_tools` key means ez's default `mcp__*`).
+    /// match the tool name. A mode without `mcp_tools` sees no MCP tools (only ez's implicit
+    /// `default` mode, used when there is no modes file, selects `mcp__*`).
     pub fn allows_submit_result(&self, id: &str) -> bool {
         match self.mcp_tools.get(id) {
-            None => true,
+            None => false,
             Some(globs) => globs.iter().any(|g| glob_matches(g, SUBMIT_RESULT_TOOL)),
         }
     }

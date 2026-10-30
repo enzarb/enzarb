@@ -324,12 +324,12 @@ fn result_needs_submit_result_in_mcp_tools() {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    for bad in ["none", "other"] {
+    for bad in ["none", "other", "dflt"] {
         let e = errs(&node(bad, true));
         assert!(e.contains("submit_result"), "{bad}: {e}");
         assert_eq!(errs(&node(bad, false)), "", "no result, no tool needed");
     }
-    for good in ["all", "exact", "dflt"] {
+    for good in ["all", "exact"] {
         assert_eq!(errs(&node(good, true)), "", "{good}");
     }
 }
