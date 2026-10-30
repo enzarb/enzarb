@@ -46,7 +46,7 @@
 	{:else}
 		<ol class="ez-noderuns" data-testid="node-runs">
 			{#each run.nodeRuns as n (n.node + ':' + n.visit)}
-				{@const nt = runTone(n.status === 'running' ? 'running' : n.status)}
+				{@const nt = runTone(n.status)}
 				<li aria-label="Node {n.node}">
 					<div class="ez-noderuns__head">
 						<strong>{n.node}</strong>

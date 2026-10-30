@@ -35,7 +35,17 @@ async fn main() -> Result<()> {
     let mut router_task = None;
     let mut exec_task = None;
     if cfg.routing {
-        let pool = db::connect(&database_url()?, (cfg.concurrency as u32 + 4).min(32)).await?;
+        // Routing workers plus, when executing, a driver and a lease heartbeat per run.
+        let runs = if cfg.executor {
+            2 * cfg.run_concurrency as u32
+        } else {
+            0
+        };
+        let pool = db::connect(
+            &database_url()?,
+            (cfg.concurrency as u32 + 4 + runs).min(64),
+        )
+        .await?;
         let source: Arc<dyn RepoSource> = match (&cfg.github_app_id, &cfg.github_app_private_key) {
             (Some(id), Some(key)) => Arc::new(GithubApp::new(id, key).context("GitHub App key")?),
             _ => {

@@ -267,7 +267,7 @@ impl Executor {
                 }
             };
             if state.is_ended() {
-                return self.write_state(&run, &state, None).await;
+                return self.write_state(&run, &state).await;
             }
             if run.stop_requested {
                 return self
@@ -487,12 +487,7 @@ impl Executor {
     }
 
     /// Persists the state of a run `advance` moved to its end node.
-    async fn write_state(
-        &self,
-        run: &RunRow,
-        state: &RunState,
-        _unused: Option<()>,
-    ) -> Result<(), Stop> {
+    async fn write_state(&self, run: &RunRow, state: &RunState) -> Result<(), Stop> {
         match &state.status {
             RunStatus::Ended { status, reason, .. } => {
                 self.end_run(
