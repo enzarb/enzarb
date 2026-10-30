@@ -17,6 +17,18 @@ export default mergeConfig(
 				{
 					find: /^(#lib\/server|\.)\/repo-access\.ts$/,
 					replacement: path.resolve(import.meta.dirname, 'e2e/stubs/repo-access.ts')
+				},
+				{
+					find: /^(#lib\/server|\.)\/repo-files\.ts$/,
+					replacement: path.resolve(import.meta.dirname, 'e2e/stubs/repo-files.ts')
+				},
+				{
+					find: /^(#lib\/server|\.)\/github-app\.ts$/,
+					replacement: path.resolve(import.meta.dirname, 'e2e/stubs/github-app.ts')
+				},
+				{
+					find: /^(#lib\/server|\.)\/tracks\.ts$/,
+					replacement: path.resolve(import.meta.dirname, 'e2e/stubs/tracks.ts')
 				}
 			]
 		}
