@@ -19,6 +19,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import Button from '../form/Button.svelte';
+	import ListField from '../modes/ListField.svelte';
 	import Select from '../form/Select.svelte';
 	import TextField from '../form/TextField.svelte';
 	import SaveSteps from '../modes/SaveSteps.svelte';
@@ -129,7 +130,9 @@
 		const names = chosen.map((t) => t.title).join(', ');
 		try {
 			const cur = await templates.load();
-			const merged = mergeTemplates(initial.file, cur.doc, chosen);
+			// The live document, so unsaved rule edits are committed with the templates.
+			const live = toWire($state.snapshot(doc) as WorkflowsDoc);
+			const merged = mergeTemplates(live, cur.doc, chosen);
 			const m = await templates.renderModes(merged.modes, cur.text);
 			if (!m.ok) return set('modes-check', 'failed', m.message);
 			set('modes-check', 'done');
@@ -253,17 +256,10 @@
 					{/if}
 				</p>
 				<div class="ez-cluster ez-cluster--end">
-					<TextField
+					<ListField
 						label="Events for {wf.id} (one per line)"
 						help="issues.labeled, push, or any event.action"
-						bind:value={
-							() => wf.on.join('\n'),
-							(v) =>
-								(wf.on = v
-									.split('\n')
-									.map((x) => x.trim())
-									.filter(Boolean))
-						}
+						bind:value={wf.on}
 					/>
 					<Select
 						label="Add event for {wf.id}"

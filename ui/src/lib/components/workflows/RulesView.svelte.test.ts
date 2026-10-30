@@ -83,6 +83,20 @@ describe('RulesView', () => {
 		await expect.poll(() => saved.mock.calls.length).toBe(1);
 	});
 
+	it('keeps several trigger events, one per line', async () => {
+		const a = api();
+		render(RulesView, { file, api: a, dryRun: dry(), saved: vi.fn(), advanced: vi.fn() });
+		await page
+			.getByRole('textbox', { name: 'Events for fix-issue (one per line)' })
+			.fill('issues.labeled\npull_request.opened');
+		await page.getByRole('button', { name: 'Commit to main' }).click();
+		await expect.poll(() => vi.mocked(a.save).mock.calls.length).toBe(1);
+		expect(vi.mocked(a.save).mock.calls[0][0].file?.workflows?.['fix-issue'].on).toEqual([
+			'issues.labeled',
+			'pull_request.opened'
+		]);
+	});
+
 	it('opens the designer for a workflow', async () => {
 		const advanced = vi.fn();
 		render(RulesView, { file, api: api(), dryRun: dry(), saved: vi.fn(), advanced });
@@ -128,5 +142,27 @@ describe('RulesView templates', () => {
 		expect(vi.mocked(a.save).mock.calls[0][0].file?.workflows).toHaveProperty(
 			'review-pull-requests'
 		);
+	});
+
+	it('keeps unsaved rule edits when adding a template', async () => {
+		const a = api();
+		render(RulesView, {
+			file,
+			api: a,
+			dryRun: dry(),
+			saved: vi.fn(),
+			advanced: vi.fn(),
+			templates: tpl()
+		});
+		await page
+			.getByRole('textbox', { name: 'Only if, for fix-issue' })
+			.fill("event.label.name == 'urgent'");
+		await page.getByRole('button', { name: 'Add from template' }).click();
+		await page.getByRole('checkbox', { name: 'Review pull requests' }).click();
+		await page.getByRole('button', { name: 'Add selected' }).click();
+		await expect.poll(() => vi.mocked(a.save).mock.calls.length).toBe(1);
+		const wfs = vi.mocked(a.save).mock.calls[0][0].file?.workflows;
+		expect(wfs?.['fix-issue'].if).toBe("event.label.name == 'urgent'");
+		expect(wfs).toHaveProperty('review-pull-requests');
 	});
 });
