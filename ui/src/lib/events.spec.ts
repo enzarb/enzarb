@@ -36,8 +36,19 @@ describe('decisionHeadline', () => {
 		started: [],
 		reasons: [],
 		errors: [],
+		resumed: [],
 		decidedAt: '2026-10-30T00:00:00.000Z'
 	};
+	it('says which run an event resumed', () => {
+		const resumed = [{ run: '11111111-aaaa-4bbb-8ccc-222222222222', workflow: 'fix', node: 'w' }];
+		expect(decisionHeadline({ ...base, outcome: 'resumed', resumed })).toEqual({
+			text: 'Resumed run 11111111 (fix, w)',
+			tone: 'ok'
+		});
+		expect(decisionHeadline({ ...base, outcome: 'started', started: ['a'], resumed }).text).toBe(
+			'Started a; Resumed run 11111111 (fix, w)'
+		);
+	});
 	it('names the started workflows', () => {
 		expect(decisionHeadline({ ...base, outcome: 'started', started: ['a', 'b'] })).toEqual({
 			text: 'Started a, b',

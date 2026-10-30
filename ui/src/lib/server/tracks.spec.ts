@@ -106,6 +106,7 @@ describe('tracks client', () => {
 						matched: ['fix'],
 						reasons: [{ workflow: 'fix', matched: true, on: 'issues', reason: 'on `issues`' }],
 						errors: [],
+						resumed: [{ run: 'r1', workflow: 'fix', node: 'w' }],
 						decided_at: '2026-10-30T00:00:00.000Z'
 					}
 				]
@@ -119,6 +120,7 @@ describe('tracks client', () => {
 			'http://tracks:8080/v1/decisions?event_ids=7,8'
 		);
 		expect(d).toMatchObject({ eventId: 7, outcome: 'started', started: ['fix'], sha: 'abc1234' });
+		expect(d.resumed).toEqual([{ run: 'r1', workflow: 'fix', node: 'w' }]);
 		expect(d.reasons[0]).toEqual({
 			workflow: 'fix',
 			matched: true,

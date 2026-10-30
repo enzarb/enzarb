@@ -22,6 +22,8 @@ export interface RunSummary {
 	createdAt: string;
 	updatedAt: string;
 	finishedAt: string | null;
+	/** While status is `waiting`: when the wait times out (null: only the run's deadline). */
+	waitUntil?: string | null;
 }
 
 export interface NodeUsage {
@@ -48,7 +50,28 @@ export interface NodeRendered {
 	task?: string;
 	args?: string[];
 	script?: string;
+	/** `action` nodes: comment, open_pull_request, add_labels, remove_labels. */
+	action?: string;
+	title?: string;
+	body?: string;
+	labels?: string[];
+	draft?: boolean;
+	/** `wait` nodes. */
+	on?: string[];
+	condition?: string;
+	timeout_secs?: number;
 	[k: string]: unknown;
+}
+
+/** What a `wait` node waits for, and how it ended (`node_runs.wait`). */
+export interface NodeWait {
+	on: string[];
+	if: string | null;
+	timeout_secs: number | null;
+	/** When the wait times out; null without a timeout. */
+	until: string | null;
+	resumed_by_event?: number | null;
+	timed_out?: boolean;
 }
 
 export interface NodeRun {
@@ -61,6 +84,9 @@ export interface NodeRun {
 	usage: NodeUsage | null;
 	git: NodeGit[] | null;
 	error: string | null;
+	/** The GitHub call an `action` node made (or, in a test run, would have made). */
+	intent: Record<string, unknown> | null;
+	wait: NodeWait | null;
 	startedAt: string | null;
 	finishedAt: string | null;
 }
@@ -114,4 +140,41 @@ export function usageText(u: NodeUsage | null): string {
 	if (u.input_tokens !== undefined) parts.push(`${u.input_tokens} in`);
 	if (u.output_tokens !== undefined) parts.push(`${u.output_tokens} out`);
 	return parts.join(', ');
+}
+
+const ACTION_LABELS: Record<string, string> = {
+	comment: 'Commented',
+	open_pull_request: 'Opened pull request',
+	add_labels: 'Added labels',
+	remove_labels: 'Removed labels'
+};
+
+/** What an `action` node did, as a sentence ("Opened pull request #42"); empty for other nodes. */
+export function actionText(n: Pick<NodeRun, 'rendered' | 'outputs' | 'status'>): string {
+	const r = n.rendered;
+	if (r?.type !== 'action' || !r.action) return '';
+	const test = n.outputs?.test === true;
+	const num = n.outputs?.number;
+	const what = ACTION_LABELS[r.action] ?? r.action;
+	const labels = r.labels?.length ? `: ${r.labels.join(', ')}` : '';
+	if (n.status !== 'done') return `${r.action.replace(/_/g, ' ')} did not complete`;
+	const ref = r.action === 'open_pull_request' && num !== undefined ? ` #${num}` : '';
+	return `${test ? 'Would have: ' : ''}${what}${ref}${labels}`;
+}
+
+/** A GitHub link the action produced (comment, pull request); null for labels and test runs. */
+export function actionUrl(n: Pick<NodeRun, 'rendered' | 'outputs'>): string | null {
+	const u = n.outputs?.url;
+	if (n.rendered?.type !== 'action' || typeof u !== 'string' || n.outputs?.test === true)
+		return null;
+	return /^https:\/\/github\.com\//.test(u) ? u : null;
+}
+
+/** "waiting for issue_comment.created if <condition>, until <time>" for a parked or finished wait. */
+export function waitText(n: Pick<NodeRun, 'rendered' | 'wait'>): string {
+	const w = n.wait;
+	const on = w?.on ?? n.rendered?.on ?? [];
+	if (on.length === 0) return '';
+	const cond = w?.if ?? n.rendered?.condition;
+	return `${on.join(', ')}${cond ? ` if ${cond}` : ''}`;
 }

@@ -24,6 +24,14 @@ test('lists the run, shows each node and stops it', async ({ page }) => {
 		'href',
 		'https://github.com/e2e-org/app/tree/ez/fix-issue/x'
 	);
+	const say = page.getByRole('listitem', { name: 'Node say' });
+	await expect(say.getByRole('link', { name: 'Opened pull request #42' })).toHaveAttribute(
+		'href',
+		'https://github.com/e2e-org/app/pull/42'
+	);
+	await expect(page.getByRole('listitem', { name: 'Node wait_reply' })).toContainText(
+		'Waiting for issue_comment.created if event.comment.user.login == subject.author, until'
+	);
 	await expect(page.getByRole('listitem', { name: 'Node build' })).toContainText(
 		'mise run build -- go'
 	);

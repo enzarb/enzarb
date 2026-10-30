@@ -66,6 +66,8 @@ pub enum Outcome {
     NoMatch,
     Skipped,
     Error,
+    /// The event started no run but resumed runs parked in a `wait` node.
+    Resumed,
 }
 
 impl Outcome {
@@ -75,6 +77,7 @@ impl Outcome {
             Self::NoMatch => "no_match",
             Self::Skipped => "skipped",
             Self::Error => "error",
+            Self::Resumed => "resumed",
         }
     }
 }
@@ -91,6 +94,8 @@ pub struct Decision {
     pub matched: Vec<String>,
     pub reasons: Vec<Reason>,
     pub errors: Vec<String>,
+    /// Runs this event resumed out of a `wait` node: `{run, workflow, node}` each.
+    pub resumed: Vec<Value>,
 }
 
 impl Decision {
@@ -104,6 +109,7 @@ impl Decision {
             matched: Vec::new(),
             reasons: Vec::new(),
             errors: Vec::new(),
+            resumed: Vec::new(),
         }
     }
 
@@ -222,9 +228,115 @@ pub async fn route(
 /// Returns `false` when the event was already decided (nothing is written).
 pub async fn commit(
     pool: &PgPool,
+    decision: Decision,
+    file: Option<&WorkflowsFile>,
+    row: &EventRow,
+) -> Result<bool, sqlx::Error> {
+    commit_resuming(pool, decision, file, row, &[]).await
+}
+
+/// A run parked in a `wait` node that the event satisfies.
+#[derive(Debug, Clone)]
+pub struct Resume {
+    pub run_id: String,
+    pub workflow: String,
+    pub node: String,
+    pub node_run_id: i64,
+    /// The wait node's outputs (`event`, `timed_out`).
+    pub outputs: Value,
+}
+
+/// The head branch of the pull request an event is about, if any.
+fn head_ref(row: &EventRow) -> Option<String> {
+    row.payload
+        .pointer("/pull_request/head/ref")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// The parked runs of `row`'s repository whose wait accepts the event. A run is a candidate when
+/// the event is about its subject (`owner/repo#number`) or about a pull request whose head is
+/// the run's branch (`ez/<workflow>/<run>`); then the wait's `on` and `if` decide. Returns the
+/// matches and notes for events that could not be evaluated. `Err` is transient.
+pub async fn resume_candidates(
+    pool: &PgPool,
+    engine: &Engine,
+    source: &dyn RepoSource,
+    row: &EventRow,
+) -> Result<(Vec<Resume>, Vec<String>), String> {
+    let Some(repo) = &row.repo else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let event = event_of(row);
+    let key = event.subject().map(|s| s.key(repo));
+    let rows = sqlx::query(
+        "SELECT id::text AS id, workflow, repo, sha, state, wait_node_run_id FROM tracks.runs
+          WHERE status = 'waiting' AND NOT test AND finished_at IS NULL
+            AND wait_node_run_id IS NOT NULL AND lower(repo) = lower($1)
+            AND (subject_key = $2 OR 'ez/' || workflow || '/' || id::text = $3)",
+    )
+    .bind(repo)
+    .bind(&key)
+    .bind(head_ref(row))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("reading waiting runs: {e}"))?;
+    let mut files: HashMap<(String, String), Result<WorkflowsFile, String>> = HashMap::new();
+    let (mut out, mut notes) = (Vec::new(), Vec::new());
+    for r in rows {
+        let (id, workflow, run_repo, sha): (String, String, String, String) =
+            (r.get("id"), r.get("workflow"), r.get("repo"), r.get("sha"));
+        let state: RunState = match serde_json::from_value(r.get("state")) {
+            Ok(s) => s,
+            Err(e) => {
+                notes.push(format!("run {id}: corrupt state: {e}"));
+                continue;
+            }
+        };
+        let k = (run_repo.clone(), sha.clone());
+        if !files.contains_key(&k) {
+            let loaded = match source
+                .file_at(&run_repo, &sha, crate::github::WORKFLOWS_PATH)
+                .await
+            {
+                Ok(Some(t)) => ez_workflow::parse(&t).map_err(|e| e.to_string()),
+                Ok(None) => Err("the workflow file is gone at the pinned commit".into()),
+                Err(SourceError::Transient(m)) => return Err(m),
+                Err(SourceError::Permanent(m)) => Err(m),
+            };
+            files.insert(k.clone(), loaded);
+        }
+        let file = match &files[&k] {
+            Ok(f) => f,
+            Err(e) => {
+                notes.push(format!("run {id}: {e}"));
+                continue;
+            }
+        };
+        match state.wait_accepts(engine, file, &event) {
+            Ok(Ok(true)) => out.push(Resume {
+                run_id: id,
+                workflow,
+                node: state.current().unwrap_or_default().to_string(),
+                node_run_id: r.get("wait_node_run_id"),
+                outputs: ez_workflow::wait_outputs(Some(&event)),
+            }),
+            Ok(Ok(false)) => {}
+            Ok(Err(m)) => notes.push(format!("run {id}: {m}")),
+            Err(e) => notes.push(format!("run {id}: {e}")),
+        }
+    }
+    Ok((out, notes))
+}
+
+/// [`commit`], also resuming the parked runs in `resumes` in the same transaction. The decision
+/// row is claimed first, so an event resumes a given wait at most once.
+pub async fn commit_resuming(
+    pool: &PgPool,
     mut decision: Decision,
     file: Option<&WorkflowsFile>,
     row: &EventRow,
+    resumes: &[Resume],
 ) -> Result<bool, sqlx::Error> {
     let mut tx = pool.begin().await?;
     let claimed = sqlx::query(
@@ -242,6 +354,24 @@ pub async fn commit(
     if claimed == 0 {
         tx.rollback().await?;
         return Ok(false);
+    }
+
+    for r in resumes {
+        let res = sqlx::query(
+            "UPDATE tracks.runs SET status = 'running', wait_until = NULL, updated_at = now(),
+                    wait_result = $3
+              WHERE id = $1::uuid AND status = 'waiting' AND wait_node_run_id = $2",
+        )
+        .bind(&r.run_id)
+        .bind(r.node_run_id)
+        .bind(json!({ "outputs": r.outputs, "event_id": decision.event_id }))
+        .execute(&mut *tx)
+        .await?;
+        if res.rows_affected() == 1 {
+            decision
+                .resumed
+                .push(json!({ "run": r.run_id, "workflow": r.workflow, "node": r.node }));
+        }
     }
 
     let event = event_of(row);
@@ -327,9 +457,13 @@ pub async fn commit(
         decision.outcome = Outcome::NoMatch;
     }
     decision.matched = started;
+    if !decision.resumed.is_empty() && decision.outcome != Outcome::Started {
+        decision.outcome = Outcome::Resumed;
+    }
     sqlx::query(
         "UPDATE tracks.event_decisions
-            SET outcome = $2, matched = $3, reasons = $4, errors = $5, decided_at = now()
+            SET outcome = $2, matched = $3, reasons = $4, errors = $5, resumed = $6,
+                decided_at = now()
           WHERE event_id = $1",
     )
     .bind(decision.event_id)
@@ -337,6 +471,7 @@ pub async fn commit(
     .bind(json!(decision.matched))
     .bind(serde_json::to_value(&decision.reasons).unwrap_or(json!([])))
     .bind(json!(decision.errors))
+    .bind(json!(decision.resumed))
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -477,15 +612,18 @@ impl Router {
         if decided {
             return Ok(());
         }
-        let (d, file) = route(
+        let (resumes, notes) =
+            resume_candidates(&self.pool, &self.engine, self.source.as_ref(), &row).await?;
+        let (mut d, file) = route(
             &self.engine,
             self.projects.as_ref(),
             self.source.as_ref(),
             &row,
         )
         .await?;
+        d.errors.extend(notes);
         let outcome_hint = d.outcome;
-        let wrote = commit(&self.pool, d, file.as_ref(), &row)
+        let wrote = commit_resuming(&self.pool, d, file.as_ref(), &row, &resumes)
             .await
             .map_err(|e| format!("recording decision: {e}"))?;
         if wrote {

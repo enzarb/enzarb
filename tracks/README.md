@@ -1,6 +1,6 @@
 # enzarb-tracks
 
-Runs ez workflows (`.ez/workflows.toml`) for enzarb projects ([ADR-0029](../docs/adr/0029-ez-workflows.md)). It serves the API behind the UI's modes and workflow designers and, with routing on, routes every connector event to the owning Project's workflows and records a decision (rollout step 3). Runs are created `pending`; with the executor on, tracks runs their `agent`, `command` and `end` nodes in the Project's sandbox (rollout step 4).
+Runs ez workflows (`.ez/workflows.toml`) for enzarb projects ([ADR-0029](../docs/adr/0029-ez-workflows.md)). It serves the API behind the UI's modes and workflow designers and, with routing on, routes every connector event to the owning Project's workflows and records a decision (rollout step 3). Runs are created `pending`; with the executor on, tracks runs their `agent` and `command` nodes in the Project's sandbox (rollout step 4) and their `action` and `wait` nodes itself (rollout step 5).
 
 All workflow semantics come from [`ez-workflow`](../ez/crates/ez-workflow) and all mode editing from ez-core (`modes_api`, `modes_edit`), so the UI never re-implements a rule.
 
@@ -12,7 +12,7 @@ Cluster-internal. The UI calls it after its own access checks (write permission 
 |---|---|---|
 | `GET /healthz`, `GET /readyz` | | `ok` (no auth) |
 | `GET /v1/runs?project=&repo=&event_ids=&limit=` | at least one filter | `{runs: [...]}` newest first (max 200) |
-| `GET /v1/runs/{id}` | | `{run}` with `node_runs: [{node, visit, status, rendered, mode, outputs, usage, git, error, started_at, finished_at}]`; 404 `not_found` |
+| `GET /v1/runs/{id}` | | `{run}` with `node_runs: [{node, visit, status, rendered, mode, outputs, usage, git, error, intent, wait, started_at, finished_at}]` (and `wait_until` on the run); 404 `not_found` |
 | `POST /v1/runs/{id}/stop` | | `{stopping: true}`; the executor interrupts the step and ends the run `cancelled` (`reason: stopped`); 409 `run_finished` |
 | `GET /v1/modes/catalog` | | ez's built-in tools, hook events, permission and `on_failure` values, and the `ez init` templates (`Catalog`; mise tasks, MCP servers and profiles are empty) |
 | `POST /v1/modes/parse` | `{text}`: a `.ez/modes.toml` | `{doc: ModesDoc, issues}`, every mode with `originalId` = its id (keep it when renaming, so render rewrites the section in place); 422 `invalid_modes_toml` when it doesn't parse |
@@ -53,7 +53,9 @@ Cluster-internal. The UI calls it after its own access checks (write permission 
 - **One node.** Render with `ez-workflow` -> write the `node_runs` row (with `step_run_id`) -> dial the sandbox (`ez_steps` required) -> `step_start` -> wait for `step_finished` (pushed, with a `step_status` poll as backstop) -> in ONE transaction write the node's outputs/usage/git and the `advance`d run state.
 - **Restart.** A `node_runs` row without a finish means the step may be running: tracks re-attaches with `step_status` (running: keep waiting; interrupted: `step_resume`; finished: take the result) and sends `step_start` again only when the sandbox answers `unknown`. `step_start` is idempotent per `run_id` as well.
 - **Limits.** `max_visits` and the edge rules are `ez-workflow`'s; `timeout` becomes `runs.deadline` (past it the step is stopped and the run fails `timeout`); `max_runs` is checked, under an advisory lock, when a `pending` run becomes `running`.
-- **Failures.** A step that fails still advances with its outputs (`exit`, `exit_code`), so edges can branch on it. A missing Claude token ends the run `failed` (`no_credential`); an `action`/`wait` node ends it `failed` ("node type not supported yet"). Sandbox or GitHub trouble pauses the run (the lease is held for 15 s) and retries; it does not fail it.
+- **Actions.** `comment`, `open_pull_request`, `add_labels`, `remove_labels` run in tracks with a per-call installation token limited to `issues: write` (`pull_requests: write` for a pull request subject; `pull_requests: write` + `contents: read` for `open_pull_request`). The intent is stored on the `node_runs` row before the call; after a restart the node replays by first looking for its effect (comment marker `<!-- ez-tracks:<run>:<node>:<visit> -->`, the pull request of the run branch). Test runs record the call as the output instead (synthetic `number`/`url`).
+- **Waits.** A run reaching a `wait` parks (`waiting`, no lease, `wait_until`). The router resumes it when an event about the run's subject (or a pull request whose head is the run branch) satisfies `on`/`if`, inside the decision transaction (at most once); the timeout sweep takes the `timed_out` edge.
+- **Failures.** A step that fails still advances with its outputs (`exit`, `exit_code`), so edges can branch on it. A missing Claude token ends the run `failed` (`no_credential`); a permanent action error (no pushed commits, GitHub 4xx) fails the node and the run. Sandbox or GitHub trouble pauses the run (the lease is held for 15 s) and retries; it does not fail it.
 
 ## Checks
 

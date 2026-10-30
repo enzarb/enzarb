@@ -501,11 +501,13 @@ struct DecisionOut {
     repo: Option<String>,
     project: Option<String>,
     sha: Option<String>,
-    /// `started`, `no_match`, `skipped` or `error`.
+    /// `started`, `no_match`, `skipped`, `error` or `resumed`.
     outcome: String,
     matched: Value,
     reasons: Value,
     errors: Value,
+    /// Runs this event resumed out of a `wait` node: `[{run, workflow, node}]`.
+    resumed: Value,
     decided_at: String,
 }
 
@@ -542,7 +544,7 @@ async fn decisions(
     }
     let pool = s.pool.as_ref().ok_or_else(no_database)?;
     let rows = sqlx::query(
-        "SELECT event_id, repo, project, sha, outcome, matched, reasons, errors,
+        "SELECT event_id, repo, project, sha, outcome, matched, reasons, errors, resumed,
                 to_char(decided_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS decided_at
            FROM tracks.event_decisions WHERE event_id = ANY($1) ORDER BY event_id DESC",
     )
@@ -561,6 +563,7 @@ async fn decisions(
             matched: r.get("matched"),
             reasons: r.get("reasons"),
             errors: r.get("errors"),
+            resumed: r.get("resumed"),
             decided_at: r.get("decided_at"),
         })
         .collect();

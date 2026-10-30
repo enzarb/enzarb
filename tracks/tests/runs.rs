@@ -1,7 +1,9 @@
 //! The run executor against a real Postgres (testcontainers) and a fake sandbox that speaks the
 //! real step frames over `enzarb_proto::session::memory` pairs: an agent -> command -> end path
 //! (with the result feeding an edge), failures, `no_credential`, resume after a tracks restart
-//! (the step is not started again), unsupported nodes, Stop, and the run endpoints.
+//! (the step is not started again), Stop, the run endpoints, and (ADR-0029 step 5) `action`
+//! nodes against a fake GitHub HTTP server (comment, labels, pull request, idempotent replay after a
+//! simulated crash, test runs) and `wait` nodes resumed or not by routed events, or timed out.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -9,15 +11,19 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::body::Body;
+use axum::extract::State;
+use axum::http::{Method, Uri};
 use axum::http::{Request, StatusCode, header};
 use enzarb_proto::session::memory::session_pair_with;
 use enzarb_proto::session::{Event, ServerOptions, Session, StepInfo};
 use enzarb_proto::{
     ClientKind, Ctrl, Secret, StepExec, StepFinished, StepGit, StepPhase, StepStart, feature,
 };
+use enzarb_tracks::actions::{ActionError, Actions, Call, GithubActions};
 use enzarb_tracks::exec::{ExecConfig, Executor};
 use enzarb_tracks::github::{MODES_PATH, RepoSource, Snapshot, SourceError, WORKFLOWS_PATH};
 use enzarb_tracks::projects::{ProjectLookup, ProjectRef};
+use enzarb_tracks::router::Router;
 use enzarb_tracks::sandbox::{ClaudeTokens, Link, LinkError, Sandboxes, SessionLink};
 use enzarb_tracks::{api, db};
 use ez_workflow::{Event as WfEvent, RunInfo, RunState};
@@ -77,6 +83,249 @@ type = "end"
 status = "done"
 "#;
 
+const FLOW: &str = r#"
+version = 1
+[workflows.wf]
+on = ["issues.labeled"]
+start = "triage"
+[workflows.wf.nodes.triage]
+type = "agent"
+mode = "triage"
+instruction = "Issue #{{ event.issue.number }}"
+result = { decision = { enum = ["go", "stop"] } }
+push = true
+next = [{ if = "git.pushed", to = "say" }, { to = "bad" }]
+[workflows.wf.nodes.say]
+type = "action"
+action = "comment"
+body = "Plan {{ nodes.triage.result.decision }} for #{{ subject.number }}"
+next = "label"
+[workflows.wf.nodes.label]
+type = "action"
+action = "add_labels"
+labels = ["working", "issue-{{ subject.number }}"]
+next = "unlabel"
+[workflows.wf.nodes.unlabel]
+type = "action"
+action = "remove_labels"
+labels = ["ez"]
+next = "pr"
+[workflows.wf.nodes.pr]
+type = "action"
+action = "open_pull_request"
+title = "Fix #{{ subject.number }}"
+body = "Closes #{{ subject.number }} ({{ nodes.say.number }})"
+draft = true
+next = "good"
+[workflows.wf.nodes.good]
+type = "end"
+status = "done"
+[workflows.wf.nodes.bad]
+type = "end"
+status = "failed"
+"#;
+
+/// Waits for a comment by the subject's author; times out after 1s only in `WAIT_SHORT`.
+const WAIT_WF: &str = r#"
+version = 1
+[workflows.wf]
+on = ["issues.labeled"]
+start = "w"
+[workflows.wf.nodes.w]
+type = "wait"
+on = ["issue_comment.created"]
+if = "event.comment.user.login == subject.author"
+timeout = "7d"
+next = [{ if = "timed_out", to = "stale" }, { to = "resumed" }]
+[workflows.wf.nodes.resumed]
+type = "end"
+status = "done"
+[workflows.wf.nodes.stale]
+type = "end"
+status = "cancelled"
+"#;
+
+const WAIT_SHORT: &str = r#"
+version = 1
+[workflows.wf]
+on = ["issues.labeled"]
+start = "w"
+[workflows.wf.nodes.w]
+type = "wait"
+on = ["issue_comment.created"]
+timeout = "1s"
+next = [{ if = "timed_out", to = "stale" }, { to = "resumed" }]
+[workflows.wf.nodes.resumed]
+type = "end"
+status = "done"
+[workflows.wf.nodes.stale]
+type = "end"
+status = "cancelled"
+"#;
+
+/// Waits for the pull request of the run branch to close.
+const WAIT_PR: &str = r#"
+version = 1
+[workflows.wf]
+on = ["issues.labeled"]
+start = "w"
+[workflows.wf.nodes.w]
+type = "wait"
+on = ["pull_request.closed"]
+next = "resumed"
+[workflows.wf.nodes.resumed]
+type = "end"
+status = "done"
+"#;
+
+/// A fake GitHub REST API: records every request, keeps comments and pull requests.
+#[derive(Default)]
+struct GhState {
+    reqs: Vec<(String, String, Value, String)>,
+    comments: Vec<Value>,
+    pulls: Vec<Value>,
+}
+
+struct Gh {
+    st: Mutex<GhState>,
+    /// `ahead_by` of the run branch; `None`: the branch does not exist (404).
+    compare: Mutex<Option<u64>>,
+    url: String,
+}
+
+async fn gh_handler(
+    State(g): State<Arc<Gh>>,
+    method: Method,
+    uri: Uri,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> (StatusCode, axum::Json<Value>) {
+    let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let auth = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let pq = uri
+        .path_and_query()
+        .map(|p| p.to_string())
+        .unwrap_or_default();
+    let path = uri.path().to_string();
+    let mut st = g.st.lock().unwrap();
+    st.reqs.push((method.to_string(), pq, body.clone(), auth));
+    let ok = |v: Value| (StatusCode::OK, axum::Json(v));
+    if path.contains("/compare/") {
+        return match *g.compare.lock().unwrap() {
+            Some(n) => ok(json!({"ahead_by": n})),
+            None => (
+                StatusCode::NOT_FOUND,
+                axum::Json(json!({"message": "Not Found"})),
+            ),
+        };
+    }
+    if path.ends_with("/comments") {
+        if method == Method::GET {
+            return ok(json!(st.comments));
+        }
+        let id = 1000 + st.comments.len() as u64;
+        let c = json!({"id": id, "body": body["body"],
+            "html_url": format!("https://github.com/o/r/issues/7#issuecomment-{id}")});
+        st.comments.push(c.clone());
+        return (StatusCode::CREATED, axum::Json(c));
+    }
+    if path.ends_with("/pulls") {
+        if method == Method::GET {
+            return ok(json!(st.pulls));
+        }
+        let pr = json!({"number": 42, "html_url": "https://github.com/o/r/pull/42",
+            "head": {"ref": body["head"]}});
+        st.pulls.push(pr.clone());
+        return (StatusCode::CREATED, axum::Json(pr));
+    }
+    if path.ends_with("/labels") || path.contains("/labels/") {
+        return ok(json!([]));
+    }
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(json!({"message": "no route"})),
+    )
+}
+
+async fn fake_github() -> Arc<Gh> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let g = Arc::new(Gh {
+        st: Mutex::default(),
+        compare: Mutex::new(Some(2)),
+        url: format!("http://{}", listener.local_addr().unwrap()),
+    });
+    let app = axum::Router::new()
+        .fallback(gh_handler)
+        .with_state(g.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    g
+}
+
+impl Gh {
+    fn requests(&self, method: &str, contains: &str) -> Vec<(String, Value, String)> {
+        self.st
+            .lock()
+            .unwrap()
+            .reqs
+            .iter()
+            .filter(|(m, p, _, _)| m == method && p.contains(contains))
+            .map(|(_, p, b, a)| (p.clone(), b.clone(), a.clone()))
+            .collect()
+    }
+    fn total(&self) -> usize {
+        self.st.lock().unwrap().reqs.len()
+    }
+}
+
+/// The token source of the actions: records the permissions asked for.
+#[derive(Default)]
+struct ActSource {
+    perms: Mutex<Vec<Vec<(String, String)>>>,
+}
+
+#[async_trait]
+impl RepoSource for ActSource {
+    async fn snapshot(&self, _: &str, _: &str) -> Result<Snapshot, SourceError> {
+        unreachable!()
+    }
+    async fn action_token(
+        &self,
+        repo: &str,
+        permissions: &[(&str, &str)],
+    ) -> Result<String, SourceError> {
+        assert_eq!(repo, "o/r");
+        self.perms.lock().unwrap().push(
+            permissions
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        );
+        Ok("act-token".into())
+    }
+}
+
+/// Performs the call, then reports a transient failure for the first call of each node visit:
+/// the tracks process "died" after GitHub answered and before the result was written.
+struct CrashAfterCall {
+    inner: Arc<dyn Actions>,
+    seen: Mutex<std::collections::HashSet<String>>,
+}
+
+#[async_trait]
+impl Actions for CrashAfterCall {
+    async fn perform(&self, call: &Call<'_>) -> Result<Value, ActionError> {
+        let r = self.inner.perform(call).await;
+        if self.seen.lock().unwrap().insert(call.marker.to_string()) {
+            return Err(ActionError::Transient("crashed before the write".into()));
+        }
+        r
+    }
+}
+
 struct Projects;
 #[async_trait]
 impl ProjectLookup for Projects {
@@ -92,7 +341,11 @@ struct Source(&'static str);
 #[async_trait]
 impl RepoSource for Source {
     async fn snapshot(&self, _: &str, _: &str) -> Result<Snapshot, SourceError> {
-        unreachable!("the executor reads pinned files")
+        Ok(Snapshot {
+            sha: "abc1234".into(),
+            workflows: Some(self.0.to_string()),
+            modes: Some(MODES.to_string()),
+        })
     }
     async fn file_at(&self, _: &str, sha: &str, path: &str) -> Result<Option<String>, SourceError> {
         assert_eq!(sha, "abc1234", "files are read at the pinned sha");
@@ -245,6 +498,17 @@ async fn db_setup() -> Env {
     let port = node.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
     let pool = db::connect(&url, 8).await.unwrap();
+    // The connectors schema as the receiver creates it (only what routing reads).
+    for q in [
+        "CREATE SCHEMA connectors",
+        "CREATE TABLE connectors.events (id bigserial PRIMARY KEY, source text NOT NULL DEFAULT 'github',
+           delivery_id text NOT NULL, event text NOT NULL, action text, repo text, sender text,
+           payload jsonb NOT NULL, received_at timestamptz NOT NULL DEFAULT now())",
+        "CREATE VIEW connectors.event_v AS SELECT id, source, delivery_id, event, action, repo,
+           sender, payload, received_at FROM connectors.events",
+    ] {
+        sqlx::query(q).execute(&pool).await.unwrap();
+    }
     db::migrate(&pool).await.unwrap();
     Env {
         _node: Box::new(node),
@@ -258,24 +522,53 @@ fn executor(
     fake: &Arc<Fake>,
     token: Option<&'static str>,
 ) -> Arc<Executor> {
-    Arc::new(Executor::new(
-        env.pool.clone(),
-        Arc::new(Source(wf)),
-        Arc::new(Projects),
-        Arc::new(Dial(fake.clone())),
-        Arc::new(Tokens(token)),
-        ExecConfig {
-            concurrency: 2,
-            poll: Duration::from_millis(100),
-            lease: Duration::from_secs(1),
-            retry_backoff: Duration::from_millis(200),
-        },
-    ))
+    executor_with(
+        env,
+        wf,
+        fake,
+        token,
+        Arc::new(enzarb_tracks::actions::NoActions),
+    )
+}
+
+fn executor_with(
+    env: &Env,
+    wf: &'static str,
+    fake: &Arc<Fake>,
+    token: Option<&'static str>,
+    actions: Arc<dyn Actions>,
+) -> Arc<Executor> {
+    Arc::new(
+        Executor::new(
+            env.pool.clone(),
+            Arc::new(Source(wf)),
+            Arc::new(Projects),
+            Arc::new(Dial(fake.clone())),
+            Arc::new(Tokens(token)),
+            ExecConfig {
+                concurrency: 2,
+                poll: Duration::from_millis(100),
+                lease: Duration::from_secs(1),
+                retry_backoff: Duration::from_millis(200),
+            },
+        )
+        .with_actions(actions),
+    )
 }
 
 /// A `pending` run of workflow `wf`, as routing creates it.
 async fn pending_run(pool: &PgPool, wf: &str, event_id: i64) -> String {
-    let file = ez_workflow::parse(if wf == "action" { ACTION_WF } else { WORKFLOWS }).unwrap();
+    pending_run_with(
+        pool,
+        if wf == "action" { ACTION_WF } else { WORKFLOWS },
+        event_id,
+        false,
+    )
+    .await
+}
+
+async fn pending_run_with(pool: &PgPool, text: &str, event_id: i64, test: bool) -> String {
+    let file = ez_workflow::parse(text).unwrap();
     let event = WfEvent::new(
         "issues",
         Some("labeled".into()),
@@ -292,19 +585,20 @@ async fn pending_run(pool: &PgPool, wf: &str, event_id: i64) -> String {
         RunInfo {
             id: id.clone(),
             attempt: 1,
-            test: false,
+            test,
         },
     )
     .unwrap();
     sqlx::query(
-        "INSERT INTO tracks.runs (id, workflow, project, repo, event_id, sha, status, current_node, visits, state)
-         VALUES ($1::uuid, 'wf', 'p', 'o/r', $2, 'abc1234', 'pending', $3, $4, $5)",
+        "INSERT INTO tracks.runs (id, workflow, project, repo, subject_key, event_id, sha, status, test, current_node, visits, state)
+         VALUES ($1::uuid, 'wf', 'p', 'o/r', 'o/r#7', $2, 'abc1234', 'pending', $6, $3, $4, $5)",
     )
     .bind(&id)
     .bind(event_id)
     .bind(state.current())
     .bind(serde_json::to_value(&state.visits).unwrap())
     .bind(serde_json::to_value(&state).unwrap())
+    .bind(test)
     .execute(pool)
     .await
     .unwrap();
@@ -491,15 +785,326 @@ async fn a_missing_claude_token_fails_the_run_without_starting_a_step() {
     assert!(fake.started().is_empty());
 }
 
+async fn github_actions(gh: &Arc<Gh>) -> (Arc<ActSource>, Arc<dyn Actions>) {
+    let src = Arc::new(ActSource::default());
+    let actions: Arc<dyn Actions> = Arc::new(GithubActions::new(src.clone(), &gh.url).unwrap());
+    (src, actions)
+}
+
+async fn node_outputs(pool: &PgPool, id: &str, node: &str) -> Value {
+    sqlx::query_scalar("SELECT outputs FROM tracks.node_runs WHERE run_id = $1::uuid AND node = $2")
+        .bind(id)
+        .bind(node)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+fn agent_fake() -> Arc<Fake> {
+    Fake::new(Box::new(|_| Some(agent_ok(true))))
+}
+
 #[tokio::test]
-async fn action_and_wait_nodes_are_not_supported_yet() {
+async fn agent_then_comment_labels_and_pull_request() {
     let env = db_setup().await;
-    let fake = Fake::new(Box::new(|_| Some(ok(""))));
-    let ex = executor(&env, ACTION_WF, &fake, Some("t"));
-    let id = pending_run(&env.pool, "action", 1).await;
+    let gh = fake_github().await;
+    let (src, actions) = github_actions(&gh).await;
+    let ex = executor_with(&env, FLOW, &agent_fake(), Some("t"), actions);
+    let id = pending_run_with(&env.pool, FLOW, 100, false).await;
     let _stop = start_loop(&ex);
-    let (_, reason) = wait_for(&env.pool, &id, "failed").await;
-    assert_eq!(reason.as_deref(), Some("node type not supported yet"));
+    let (st, reason) = wait_for(&env.pool, &id, "done").await;
+    assert_eq!((st.as_str(), reason), ("done", None));
+
+    // comment: hidden marker, subject number from the run
+    let posts = gh.requests("POST", "/issues/7/comments");
+    assert_eq!(posts.len(), 1);
+    let body = posts[0].1["body"].as_str().unwrap();
+    assert!(body.starts_with("Plan go for #7"), "{body}");
+    assert!(
+        body.contains(&format!("<!-- ez-tracks:{id}:say:1 -->")),
+        "{body}"
+    );
+    assert_eq!(posts[0].2, "Bearer act-token");
+    let say = node_outputs(&env.pool, &id, "say").await;
+    assert_eq!(say["number"], 1000);
+    assert!(say["url"].as_str().unwrap().contains("issuecomment-1000"));
+
+    // labels
+    let add = gh.requests("POST", "/issues/7/labels");
+    assert_eq!(add[0].1, json!({"labels": ["working", "issue-7"]}));
+    assert_eq!(gh.requests("DELETE", "/issues/7/labels/ez").len(), 1);
+
+    // pull request: run branch against the default branch, outputs feed the next template
+    let prs = gh.requests("POST", "/repos/o/r/pulls");
+    assert_eq!(prs.len(), 1);
+    assert_eq!(prs[0].1["head"], format!("ez/wf/{id}"));
+    assert_eq!(prs[0].1["base"], "main");
+    assert_eq!(prs[0].1["title"], "Fix #7");
+    assert_eq!(prs[0].1["draft"], true);
+    assert_eq!(prs[0].1["body"], "Closes #7 (1000)");
+    let pr = node_outputs(&env.pool, &id, "pr").await;
+    assert_eq!(pr["number"], 42);
+    assert_eq!(pr["url"], "https://github.com/o/r/pull/42");
+
+    // each action asked for only what it needs
+    let perms = src.perms.lock().unwrap().clone();
+    let p = |k: &str, v: &str| (k.to_string(), v.to_string());
+    assert_eq!(
+        perms,
+        vec![
+            vec![p("issues", "write")],
+            vec![p("issues", "write")],
+            vec![p("issues", "write")],
+            vec![p("pull_requests", "write"), p("contents", "read")],
+        ]
+    );
+}
+
+#[tokio::test]
+async fn open_pull_request_fails_without_pushed_commits() {
+    for (ahead, want) in [(None, "has not been pushed"), (Some(0), "no commits")] {
+        let env = db_setup().await;
+        let gh = fake_github().await;
+        *gh.compare.lock().unwrap() = ahead;
+        let (_, actions) = github_actions(&gh).await;
+        let ex = executor_with(&env, FLOW, &agent_fake(), Some("t"), actions);
+        let id = pending_run_with(&env.pool, FLOW, 100, false).await;
+        let _stop = start_loop(&ex);
+        let (_, reason) = wait_for(&env.pool, &id, "failed").await;
+        assert!(reason.as_deref().unwrap().contains(want), "{reason:?}");
+        assert!(gh.requests("POST", "/repos/o/r/pulls").is_empty());
+        let (status, err): (String, Option<String>) = sqlx::query_as(
+            "SELECT status, error FROM tracks.node_runs WHERE run_id = $1::uuid AND node = 'pr'",
+        )
+        .bind(&id)
+        .fetch_one(&env.pool)
+        .await
+        .unwrap();
+        assert_eq!(status, "failed");
+        assert!(err.unwrap().contains(want));
+    }
+}
+
+#[tokio::test]
+async fn a_crash_between_the_github_call_and_the_write_does_not_repeat_the_action() {
+    let env = db_setup().await;
+    let gh = fake_github().await;
+    let (_, actions) = github_actions(&gh).await;
+    let crashing: Arc<dyn Actions> = Arc::new(CrashAfterCall {
+        inner: actions,
+        seen: Mutex::default(),
+    });
+    let ex = executor_with(&env, FLOW, &agent_fake(), Some("t"), crashing);
+    let id = pending_run_with(&env.pool, FLOW, 100, false).await;
+    let _stop = start_loop(&ex);
+    wait_for(&env.pool, &id, "done").await;
+
+    // every action ran once at GitHub although every node was attempted twice
+    assert_eq!(gh.requests("POST", "/issues/7/comments").len(), 1);
+    assert_eq!(gh.requests("POST", "/repos/o/r/pulls").len(), 1);
+    assert_eq!(gh.st.lock().unwrap().comments.len(), 1);
+    assert_eq!(gh.st.lock().unwrap().pulls.len(), 1);
+    // the replay found the comment by its marker (it listed comments) and reused its id
+    assert!(!gh.requests("GET", "/issues/7/comments").is_empty());
+    assert_eq!(node_outputs(&env.pool, &id, "say").await["number"], 1000);
+    assert_eq!(node_outputs(&env.pool, &id, "pr").await["number"], 42);
+    // one node_runs row per node visit
+    let n: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tracks.node_runs WHERE run_id = $1::uuid")
+            .bind(&id)
+            .fetch_one(&env.pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 5);
+}
+
+#[tokio::test]
+async fn test_runs_record_the_call_and_never_reach_github() {
+    let env = db_setup().await;
+    let gh = fake_github().await;
+    let (src, actions) = github_actions(&gh).await;
+    let fake = agent_fake();
+    let ex = executor_with(&env, FLOW, &fake, Some("t"), actions);
+    let id = pending_run_with(&env.pool, FLOW, 100, true).await;
+    let _stop = start_loop(&ex);
+    wait_for(&env.pool, &id, "done").await;
+    assert_eq!(gh.total(), 0, "no request reached GitHub");
+    assert!(src.perms.lock().unwrap().is_empty(), "no token was minted");
+    assert!(!fake.started()[0].workspaces[0].push, "nothing is pushed");
+    let say = node_outputs(&env.pool, &id, "say").await;
+    assert_eq!(say["test"], true);
+    assert!(say["number"].as_u64().unwrap() > 0);
+    assert!(say["url"].as_str().unwrap().contains("test-run"));
+    assert!(
+        say["call"]["body"]
+            .as_str()
+            .unwrap()
+            .starts_with("Plan go for #7")
+    );
+    assert_eq!(say["call"]["action"], "comment");
+    let pr = node_outputs(&env.pool, &id, "pr").await;
+    assert_eq!(pr["call"]["branch"], format!("ez-test/{id}"));
+    assert_eq!(pr["call"]["draft"], true);
+}
+
+async fn event(pool: &PgPool, name: &str, action: &str, payload: Value) -> i64 {
+    sqlx::query_scalar(
+        "INSERT INTO connectors.events (delivery_id, event, action, repo, payload)
+         VALUES (gen_random_uuid()::text, $1, $2, 'o/r', $3) RETURNING id",
+    )
+    .bind(name)
+    .bind(action)
+    .bind(payload)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+fn comment_event(issue: u64, who: &str) -> Value {
+    json!({"action": "created", "issue": {"number": issue, "title": "T", "user": {"login": "a"}, "html_url": "u"},
+        "comment": {"user": {"login": who}}})
+}
+
+fn router_for(env: &Env, wf: &'static str) -> Arc<Router> {
+    Arc::new(Router::new(
+        env.pool.clone(),
+        Arc::new(Source(wf)),
+        Arc::new(Projects),
+        2,
+        Duration::from_secs(1),
+    ))
+}
+
+async fn decision_of(pool: &PgPool, id: i64) -> (String, Value) {
+    sqlx::query_as("SELECT outcome, resumed FROM tracks.event_decisions WHERE event_id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_wait_is_resumed_only_by_a_matching_event_about_its_subject() {
+    let env = db_setup().await;
+    let ex = executor(&env, WAIT_WF, &agent_fake(), Some("t"));
+    let router = router_for(&env, WAIT_WF);
+    let id = pending_run_with(&env.pool, WAIT_WF, 100, false).await;
+    let _stop = start_loop(&ex);
+    wait_for(&env.pool, &id, "waiting").await;
+
+    // The parked node records what it waits for and until when.
+    let (wait, st): (Value, String) = sqlx::query_as(
+        "SELECT wait, status FROM tracks.node_runs WHERE run_id = $1::uuid AND node = 'w'",
+    )
+    .bind(&id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(st, "waiting");
+    assert_eq!(wait["on"], json!(["issue_comment.created"]));
+    assert!(wait["if"].as_str().unwrap().contains("subject.author"));
+    assert!(wait["until"].is_string());
+
+    // A comment by someone else (the `if` fails), a comment on another issue, another event.
+    let other_user = event(&env.pool, "issue_comment", "created", comment_event(7, "b")).await;
+    let other_issue = event(&env.pool, "issue_comment", "created", comment_event(8, "a")).await;
+    let other_event = event(&env.pool, "issues", "edited", comment_event(7, "a")).await;
+    for e in [other_user, other_issue, other_event] {
+        router.process(e).await;
+        let (outcome, resumed) = decision_of(&env.pool, e).await;
+        assert_eq!(outcome, "no_match");
+        assert_eq!(resumed, json!([]));
+    }
+    assert_eq!(status(&env.pool, &id).await.0, "waiting");
+
+    // The matching event resumes it, once, even when two replicas route the same event.
+    let hit = event(&env.pool, "issue_comment", "created", comment_event(7, "a")).await;
+    tokio::join!(router.process(hit), router.process(hit));
+    let (outcome, resumed) = decision_of(&env.pool, hit).await;
+    assert_eq!(outcome, "resumed");
+    assert_eq!(resumed[0]["run"], id);
+    assert_eq!(resumed[0]["node"], "w");
+    let (st, reason) = wait_for(&env.pool, &id, "done").await;
+    assert_eq!((st.as_str(), reason), ("done", None));
+    let out = node_outputs(&env.pool, &id, "w").await;
+    assert_eq!(out["timed_out"], false);
+    assert_eq!(out["event"]["comment"]["user"]["login"], "a");
+    let w: Value = sqlx::query_scalar(
+        "SELECT wait FROM tracks.node_runs WHERE run_id = $1::uuid AND node = 'w'",
+    )
+    .bind(&id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(w["resumed_by_event"], hit);
+
+    // A later event finds no waiting run.
+    let late = event(&env.pool, "issue_comment", "created", comment_event(7, "a")).await;
+    router.process(late).await;
+    assert_eq!(decision_of(&env.pool, late).await.0, "no_match");
+}
+
+#[tokio::test]
+async fn a_pull_request_of_the_run_branch_resumes_the_wait() {
+    let env = db_setup().await;
+    let ex = executor(&env, WAIT_PR, &agent_fake(), Some("t"));
+    let router = router_for(&env, WAIT_PR);
+    let id = pending_run_with(&env.pool, WAIT_PR, 100, false).await;
+    let _stop = start_loop(&ex);
+    wait_for(&env.pool, &id, "waiting").await;
+    let pr = |number: u64, head: String| {
+        json!({"action": "closed", "pull_request": {"number": number, "title": "T",
+            "user": {"login": "bot"}, "html_url": "u", "head": {"ref": head}}})
+    };
+    let unrelated = event(
+        &env.pool,
+        "pull_request",
+        "closed",
+        pr(99, "feature/x".into()),
+    )
+    .await;
+    router.process(unrelated).await;
+    assert_eq!(decision_of(&env.pool, unrelated).await.0, "no_match");
+    assert_eq!(status(&env.pool, &id).await.0, "waiting");
+    let linked = event(
+        &env.pool,
+        "pull_request",
+        "closed",
+        pr(99, format!("ez/wf/{id}")),
+    )
+    .await;
+    router.process(linked).await;
+    assert_eq!(decision_of(&env.pool, linked).await.0, "resumed");
+    wait_for(&env.pool, &id, "done").await;
+}
+
+#[tokio::test]
+async fn a_wait_takes_its_timeout_edge() {
+    let env = db_setup().await;
+    let ex = executor(&env, WAIT_SHORT, &agent_fake(), Some("t"));
+    let id = pending_run_with(&env.pool, WAIT_SHORT, 100, false).await;
+    let _stop = start_loop(&ex);
+    wait_for(&env.pool, &id, "waiting").await;
+    wait_for(&env.pool, &id, "cancelled").await;
+    let out = node_outputs(&env.pool, &id, "w").await;
+    assert_eq!(out["timed_out"], true);
+    assert_eq!(out["event"], Value::Null);
+}
+
+#[tokio::test]
+async fn a_stopped_waiting_run_is_cancelled() {
+    let env = db_setup().await;
+    let ex = executor(&env, WAIT_WF, &agent_fake(), Some("t"));
+    let id = pending_run_with(&env.pool, WAIT_WF, 100, false).await;
+    let _stop = start_loop(&ex);
+    wait_for(&env.pool, &id, "waiting").await;
+    sqlx::query("UPDATE tracks.runs SET stop_requested = true WHERE id = $1::uuid")
+        .bind(&id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let (_, reason) = wait_for(&env.pool, &id, "cancelled").await;
+    assert_eq!(reason.as_deref(), Some("stopped"));
 }
 
 #[tokio::test]
