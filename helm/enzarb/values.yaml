@@ -217,7 +217,7 @@ connectors:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-connectors-receiver
-    tag: 0.33.0
+    tag: 0.34.0
     pullPolicy: ""
   botHandle: enzarb
   botLogin: enzarb[bot]
@@ -268,7 +268,7 @@ tracks:
   image:
     repository: ghcr.io/enzarb/enzarb-tracks
     # scripts/sync-components.sh pins the released enzarb-tracks tag here.
-    tag: 0.4.0
+    tag: 0.5.0
     pullPolicy: ""
   resources: {}
   extraEnv: []
