@@ -69,6 +69,17 @@ channel?: number | null, };
 
 export type EnvironmentKind = "disk_full" | "oom" | "toolchain_missing" | "network" | "load" | "unknown";
 
+export type EzSpec = { 
+/**
+ * Contents of the pinned `.ez/modes.toml`.
+ */
+modes_toml: string, 
+/**
+ * Pinned instruction files: path relative to the worktree (`AGENTS.md`,
+ * `.ez/INSTRUCTIONS.md`) to content.
+ */
+instruction_files?: { [key in string]: string }, };
+
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
 export type Mode = "read" | "write";
@@ -154,7 +165,16 @@ export type StepExec = { "kind": "agent", runtime: Runtime, model?: string | nul
 /**
  * JSON Schema of the `submit_result` MCP tool; offered only when set.
  */
-result_schema?: JsonValue | null, } | { "kind": "command", run: string, 
+result_schema?: JsonValue | null, 
+/**
+ * ez mode id the session starts in (`ez_steps`, with `ez`). An unknown mode fails the step.
+ */
+mode?: string | null, 
+/**
+ * Run the agent as unattended `ez acp` with these pinned copies (`ez_steps`).
+ * `runtime` is then only validated, not launched.
+ */
+ez?: EzSpec | null, } | { "kind": "command", run: string, 
 /**
  * mise tool specs installed before the command.
  */

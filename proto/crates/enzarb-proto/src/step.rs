@@ -106,6 +106,13 @@ pub enum StepExec {
         /// JSON Schema of the `submit_result` MCP tool; offered only when set.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         result_schema: Option<Value>,
+        /// ez mode id the session starts in (`ez_steps`, with `ez`). An unknown mode fails the step.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+        /// Run the agent as unattended `ez acp` with these pinned copies (`ez_steps`).
+        /// `runtime` is then only validated, not launched.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ez: Option<EzSpec>,
     },
     Command {
         run: String,
@@ -114,6 +121,22 @@ pub enum StepExec {
         #[cfg_attr(feature = "codegen", ts(as = "Option<Vec<String>>", optional))]
         tools: Vec<String>,
     },
+}
+
+/// The pinned ez configuration of an `ez_steps` agent step (ADR-0029 §5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema), ts(optional_fields = nullable))]
+pub struct EzSpec {
+    /// Contents of the pinned `.ez/modes.toml`.
+    pub modes_toml: String,
+    /// Pinned instruction files: path relative to the worktree (`AGENTS.md`,
+    /// `.ez/INSTRUCTIONS.md`) to content.
+    #[serde(default)]
+    #[cfg_attr(
+        feature = "codegen",
+        ts(as = "Option<BTreeMap<String, String>>", optional)
+    )]
+    pub instruction_files: BTreeMap<String, String>,
 }
 
 /// A declared output file, read from the primary workspace after the step.

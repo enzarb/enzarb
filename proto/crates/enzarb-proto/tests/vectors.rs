@@ -94,6 +94,8 @@ fn step_start_agent() -> StepStart {
             model: Some("claude-sonnet-5-5".into()),
             prompt: "Fix the bug \u{1f41b}".into(),
             result_schema: Some(json!({"type": "object"})),
+            mode: None,
+            ez: None,
         },
         outputs: [(
             "plan".to_string(),
@@ -120,6 +122,30 @@ fn step_start_command() -> StepStart {
         env: Default::default(),
         files: Default::default(),
         github_token: None,
+        ..step_start_agent()
+    }
+}
+
+fn step_start_ez() -> StepStart {
+    let StepExec::Agent { runtime, .. } = step_start_agent().exec else {
+        unreachable!()
+    };
+    StepStart {
+        run_id: "run-124".into(),
+        task_id: "wf-run-9".into(),
+        exec: StepExec::Agent {
+            runtime,
+            model: None,
+            prompt: "Fix issue #7".into(),
+            result_schema: Some(
+                json!({"type": "object", "properties": {"verdict": {"type": "string"}}}),
+            ),
+            mode: Some("implement".into()),
+            ez: Some(EzSpec {
+                modes_toml: "default_mode = \"implement\"\n[modes.implement]\n".into(),
+                instruction_files: [("AGENTS.md".to_string(), "Be brief.\n".to_string())].into(),
+            }),
+        },
         ..step_start_agent()
     }
 }
@@ -270,6 +296,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
             "step_start_command",
             Ctrl::StepStart(Box::new(step_start_command())),
         ),
+        ("step_start_ez", Ctrl::StepStart(Box::new(step_start_ez()))),
         (
             "step_accepted",
             Ctrl::StepAccepted {
@@ -622,6 +649,32 @@ fn step_start_debug_redacts_secrets() {
     let mut v = ss.secret_values();
     v.sort();
     assert_eq!(v, ["ghs_clone", "ghs_step", "s3cret"]);
+}
+
+/// `ez_steps` fields are additive: an agent step without them decodes with both `None`, and an
+/// ez step round-trips `mode` and the pinned copies.
+#[test]
+fn ez_steps_fields_are_additive() {
+    let v = json!({"kind": "agent", "runtime": {"name": "r", "protocol": "acp", "command": ["x"]},
+        "prompt": "p"});
+    let e: StepExec = serde_json::from_value(v).unwrap();
+    assert!(matches!(
+        e,
+        StepExec::Agent {
+            mode: None,
+            ez: None,
+            ..
+        }
+    ));
+    let StepExec::Agent { mode, ez, .. } = step_start_ez().exec else {
+        unreachable!()
+    };
+    assert_eq!(mode.as_deref(), Some("implement"));
+    assert_eq!(ez.unwrap().instruction_files["AGENTS.md"], "Be brief.\n");
+    assert_eq!(feature::EZ_STEPS, "ez_steps");
+    // Absent when unset: old peers see the same bytes as before.
+    let s = serde_json::to_value(step_start_agent().exec).unwrap();
+    assert!(s.get("mode").is_none() && s.get("ez").is_none());
 }
 
 #[test]

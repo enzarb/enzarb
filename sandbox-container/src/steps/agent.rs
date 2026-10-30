@@ -46,6 +46,9 @@ pub struct AgentSpec {
     pub result_ready: Option<Box<dyn Fn() -> bool + Send + Sync>>,
     /// The user turn sent when a turn ends without the result.
     pub continuation: String,
+    /// Start the session in this mode (`session/set_mode`) before the first turn. A mode the
+    /// agent does not list in `session/new`'s `modes.availableModes`, or refuses, fails the step.
+    pub mode: Option<String>,
 }
 
 pub struct AgentEnd {
@@ -61,6 +64,7 @@ pub type Emit<'a> = &'a (dyn Fn(&str, Value) + Send + Sync);
 enum Wait {
     Init,
     Session,
+    Mode,
     Prompt,
 }
 
@@ -265,7 +269,7 @@ pub async fn run(
                             continue;
                         }
                         if let Some(err) = msg.get("error") {
-                            let what = match wait { Wait::Init => "initialize", Wait::Session => if spec.resume.is_some() { "session/load" } else { "session/new" }, Wait::Prompt => "session/prompt" };
+                            let what = match wait { Wait::Init => "initialize", Wait::Session => if spec.resume.is_some() { "session/load" } else { "session/new" }, Wait::Mode => "session/set_mode", Wait::Prompt => "session/prompt" };
                             break Err(format!("{what} failed: {err}"));
                         }
                         let result = msg.get("result").cloned().unwrap_or(Value::Null);
@@ -285,11 +289,33 @@ pub async fn run(
                                 let Some(s) = s else { break Err("session/new returned no sessionId".into()) };
                                 on_session(&s);
                                 d.event(session_kind::SYSTEM, json!({"event": if spec.resume.is_some() { "session_loaded" } else { "session" }, "session_id": s}));
+                                if let Some(m) = &spec.mode {
+                                    let avail: Option<Vec<&str>> = result.pointer("/modes/availableModes").and_then(Value::as_array)
+                                        .map(|a| a.iter().filter_map(|x| x.get("id").and_then(Value::as_str)).collect());
+                                    if let Some(a) = &avail && !a.contains(&m.as_str()) {
+                                        break Err(format!("unknown mode {m:?} (available: {})", a.join(", ")));
+                                    }
+                                    let cur = result.pointer("/modes/currentModeId").and_then(Value::as_str);
+                                    if cur != Some(m.as_str()) {
+                                        wait_id = d.request("session/set_mode", json!({"sessionId": s, "modeId": m}));
+                                        wait = Wait::Mode;
+                                        sid = Some(s);
+                                        continue;
+                                    }
+                                }
                                 let kind = if spec.resume.is_some() { session_kind::USER } else { session_kind::PROMPT };
                                 d.event(kind, json!({"text": spec.prompt}));
                                 wait_id = d.prompt(&s, &spec.prompt);
                                 wait = Wait::Prompt;
                                 sid = Some(s);
+                            }
+                            Wait::Mode => {
+                                let s = sid.clone().unwrap_or_default();
+                                d.event(session_kind::SYSTEM, json!({"event": "mode", "mode": spec.mode}));
+                                let kind = if spec.resume.is_some() { session_kind::USER } else { session_kind::PROMPT };
+                                d.event(kind, json!({"text": spec.prompt}));
+                                wait_id = d.prompt(&s, &spec.prompt);
+                                wait = Wait::Prompt;
                             }
                             Wait::Prompt => {
                                 d.usage.response(&result);
