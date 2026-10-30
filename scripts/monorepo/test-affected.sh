@@ -33,14 +33,14 @@ check "generated graph is read by the monorepo checks" "monorepo release-path" s
 check "root cargo files select every rust component" "proto operator connectors realtime sandbox-proxy sandbox-container updater tracks ez monorepo" Cargo.lock
 check "root toolchain file" "proto operator connectors realtime sandbox-proxy sandbox-container updater tracks ez monorepo" rust-toolchain.toml
 check "proto fans out" "proto sandbox-proxy sandbox-container ui" proto/crates/enzarb-proto/src/lib.rs
-check "operator fans out" "operator sandbox-proxy" operator/crates/enzarb-crds/src/lib.rs
+check "operator fans out" "operator sandbox-proxy tracks" operator/crates/enzarb-crds/src/lib.rs
 check "connectors only" "connectors" connectors/bin/receiver/src/main.rs
 check "realtime only" "realtime" realtime/src/lib.rs
 check "tracks only" "tracks" tracks/src/lib.rs
 check "ez fans out to tracks and the sandbox image" "sandbox-container tracks ez" ez/crates/ez-workflow/src/lib.rs
 check "ui only" "ui" ui/src/routes/+page.svelte
 check "helm only" "helm" helm/enzarb/values.yaml
-check "dependency order" "proto operator sandbox-proxy sandbox-container ui" ui/a.ts operator/b.rs proto/c.rs
+check "dependency order" "proto operator sandbox-proxy sandbox-container ui tracks" ui/a.ts operator/b.rs proto/c.rs
 check "shared rust workflow" "operator connectors realtime sandbox-proxy sandbox-container updater tracks ez monorepo" .github/workflows/_rust.yml
 check "retag script selects the release-path check" "release-path" .github/scripts/retag-or-build.sh
 check "own ci file (also re-runs the drift check)" "ui monorepo" .github/workflows/ci-ui.yml
