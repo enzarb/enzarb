@@ -242,7 +242,7 @@
 				"failed": {
 					"type": "end",
 					"status": "failed",
-					"reason": "the CI fixer found nothing to change in code: {{ nodes.fix.result.summary if nodes.fix.result is defined and nodes.fix.result else 'no summary was submitted' }}"
+					"reason": "the CI fixer made no push: {{ nodes.fix.result.summary if nodes.fix.result is defined and nodes.fix.result else 'no summary was submitted' }}"
 				}
 			}
 		}

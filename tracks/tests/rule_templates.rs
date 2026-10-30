@@ -102,7 +102,7 @@ fn fix_failing_ci_failure_reason_renders() {
     };
     assert_eq!(
         render(serde_json::json!({"fix": {"result": {"summary": "rate limited"}}})),
-        "the CI fixer found nothing to change in code: rate limited"
+        "the CI fixer made no push: rate limited"
     );
     assert!(
         render(serde_json::json!({"fix": {"exit": "success"}}))
