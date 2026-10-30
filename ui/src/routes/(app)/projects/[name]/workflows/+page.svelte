@@ -1,5 +1,7 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import RulesView from '#lib/components/workflows/RulesView.svelte';
 	import Button from '#lib/components/form/Button.svelte';
 	import Select from '#lib/components/form/Select.svelte';
 	import type { DryRunApi } from '#lib/components/workflows/DryRunPanel.svelte';
@@ -17,6 +19,19 @@
 		saveWorkflowsFile
 	} from '#lib/workflows.remote.ts';
 
+	const advanced = $derived(page.url.searchParams.get('view') === 'advanced');
+	const wfParam = $derived(page.url.searchParams.get('workflow') ?? undefined);
+	const setView = (workflow?: string) => {
+		const u = new URL(page.url.href);
+		if (workflow !== undefined) {
+			u.searchParams.set('view', 'advanced');
+			u.searchParams.set('workflow', workflow);
+		} else {
+			u.searchParams.delete('view');
+			u.searchParams.delete('workflow');
+		}
+		void goto(`${u.pathname}${u.search}`);
+	};
 	const name = $derived(page.params.name!);
 	let repo = $state<string | undefined>(undefined);
 	const workflows = $derived(getWorkflows({ name, repo }));
@@ -90,16 +105,31 @@
 			</Notice>
 		{/if}
 		{#key `${r.repo}@${r.sha}`}
-			<WorkflowsDesigner
-				file={r}
-				api={api(r)}
-				dryRun={dryRun(r)}
-				saved={(s) => {
-					committed = s;
-					// Picks up the new blob sha; the page's own query, whatever repo key it uses.
-					if (!s.unchanged) void workflows.refresh();
-				}}
-			/>
+			{#if !advanced}
+				<RulesView
+					file={r}
+					api={api(r)}
+					dryRun={dryRun(r)}
+					advanced={(id) => setView(id)}
+					saved={(s) => {
+						committed = s;
+						if (!s.unchanged) void workflows.refresh();
+					}}
+				/>
+			{:else}
+				<div><Button onclick={() => setView()}>Back to rules</Button></div>
+				<WorkflowsDesigner
+					initialWorkflow={wfParam}
+					file={r}
+					api={api(r)}
+					dryRun={dryRun(r)}
+					saved={(s) => {
+						committed = s;
+						// Picks up the new blob sha; the page's own query, whatever repo key it uses.
+						if (!s.unchanged) void workflows.refresh();
+					}}
+				/>
+			{/if}
 		{/key}
 	</div>
 {/if}

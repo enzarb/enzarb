@@ -11,7 +11,10 @@ const h = vi.hoisted(() => ({
 	saves: [] as { baseSha: string | null }[]
 }));
 
-vi.mock('$app/state', () => ({ page: { params: { name: 'alpha' } } }));
+vi.mock('$app/state', () => ({
+	page: { params: { name: 'alpha' }, url: new URL('http://x/?view=advanced') }
+}));
+vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
 
 function query<T>(load: () => T) {
 	return (args: unknown) => {
