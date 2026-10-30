@@ -855,10 +855,10 @@ spec:
       terminationGracePeriodSeconds: 30
 
       initContainers:
-        - name: wait-enzarb-migrate-tracks-2fb2e36a97
+        - name: wait-enzarb-migrate-tracks-3af272e641
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-2fb2e36a97]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-3af272e641]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: receiver
@@ -1023,10 +1023,10 @@ spec:
       terminationGracePeriodSeconds: 30
 
       initContainers:
-        - name: wait-enzarb-migrate-tracks-2fb2e36a97
+        - name: wait-enzarb-migrate-tracks-3af272e641
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-2fb2e36a97]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-3af272e641]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: realtime
@@ -1230,10 +1230,10 @@ spec:
       terminationGracePeriodSeconds: 30
 
       initContainers:
-        - name: wait-enzarb-migrate-tracks-2fb2e36a97
+        - name: wait-enzarb-migrate-tracks-3af272e641
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-2fb2e36a97]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-3af272e641]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       # the keyring files are root-owned; fsGroup makes them group-readable by the non-root uid
       securityContext: { fsGroup: 10001 }
@@ -1354,10 +1354,10 @@ spec:
       terminationGracePeriodSeconds: 30
 
       initContainers:
-        - name: wait-enzarb-migrate-tracks-2fb2e36a97
+        - name: wait-enzarb-migrate-tracks-3af272e641
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-2fb2e36a97]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-3af272e641]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: ui
@@ -1629,7 +1629,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-ui-405569dff1
+  name: enzarb-migrate-ui-8f9e4bdc41
   labels:
     app.kubernetes.io/name: enzarb-migrate-ui
     app.kubernetes.io/instance: enzarb
@@ -1703,7 +1703,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-tracks-2fb2e36a97
+  name: enzarb-migrate-tracks-3af272e641
   labels:
     app.kubernetes.io/name: enzarb-migrate-tracks
     app.kubernetes.io/instance: enzarb
@@ -1724,10 +1724,10 @@ spec:
       restartPolicy: OnFailure
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-405569dff1
+        - name: wait-enzarb-migrate-ui-8f9e4bdc41
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-405569dff1]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-8f9e4bdc41]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
