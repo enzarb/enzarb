@@ -24,7 +24,9 @@ pub struct StartRun {
     /// Issue or pull request number.
     pub number: u64,
     pub workflow: String,
-    /// GitHub login of the person who asked (`sender.login`).
+    /// GitHub login of the person who asked (`sender.login`). Trusted as given: tracks is
+    /// cluster-internal and bearer-authenticated, and the UI checks the person's write access
+    /// live before calling. Tracks does not re-verify it.
     pub actor: String,
 }
 
@@ -116,6 +118,13 @@ pub async fn start(State(s): State<AppState>, Json(req): Json<StartRun>) -> ApiR
                 "there is no such issue or pull request",
             )
         })?;
+    if issue.get("state").and_then(Value::as_str) == Some("closed") {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "issue_closed",
+            "the issue or pull request is closed, so a workflow cannot be started on it",
+        ));
+    }
     let snap = source
         .snapshot(&repo, &project.default_branch)
         .await

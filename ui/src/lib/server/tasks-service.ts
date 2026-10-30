@@ -81,7 +81,9 @@ export async function projectTasks(
 
 	// A subject's latest run of a workflow decides whether a failure still needs you.
 	const latest = new Map<string, RunSummary>();
-	for (const r of runs) {
+	// Sorted here (stable, newest first) so the result does not depend on the API's order.
+	const newestFirst = [...runs].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+	for (const r of newestFirst) {
 		const k = `${r.repo}#${r.subject?.number ?? ''}\0${r.workflow}`;
 		if (!latest.has(k)) latest.set(k, r);
 	}

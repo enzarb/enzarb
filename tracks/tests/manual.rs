@@ -72,7 +72,7 @@ impl RepoSource for Source {
     }
     async fn issue(&self, _: &str, n: u64) -> Result<Option<Value>, SourceError> {
         Ok((n < 100).then(|| {
-            json!({"number": n, "title": "Crash", "body": null, "state": "open",
+            json!({"number": n, "title": "Crash", "body": null, "state": if n == 99 { "closed" } else { "open" },
                    "html_url": format!("https://github.com/o/r/issues/{n}"),
                    "user": {"login": "alice"}, "labels": [{"name": "triage"}]})
         }))
@@ -170,6 +170,11 @@ async fn manual_start_refuses_unknown_unlisted_and_missing() {
     assert_eq!(
         (status, v["error"]["code"].as_str()),
         (StatusCode::NOT_FOUND, Some("no_such_issue"))
+    );
+    let (status, v) = post(&pool, req("implement", 99)).await;
+    assert_eq!(
+        (status, v["error"]["code"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("issue_closed"))
     );
     let (status, _) = post(
         &pool,

@@ -131,6 +131,25 @@ describe('projectTasks', () => {
 		expect(tasks.filter((t) => t.kind === 'failed')).toEqual([]);
 	});
 
+	it('picks the newest run by createdAt even when the input is oldest first', async () => {
+		const tracks = fakeTracks([
+			run({
+				id: '88888888-8888-4888-8888-888888888888',
+				workflow: 'fix',
+				status: 'failed',
+				createdAt: '2026-10-30T10:00:00.000Z'
+			}),
+			run({
+				id: '99999999-9999-4999-8999-999999999999',
+				workflow: 'fix',
+				status: 'done',
+				createdAt: '2026-10-30T11:00:00.000Z'
+			})
+		]);
+		const { tasks } = await projectTasks({ tracks, github: github() }, project);
+		expect(tasks.filter((t) => t.kind === 'failed')).toEqual([]);
+	});
+
 	it('carries notes for GitHub limits and a tracks outage', async () => {
 		const tracks = fakeTracks([]);
 		tracks.runs = vi.fn(async () => {
