@@ -1394,7 +1394,15 @@ impl Agent {
     ) -> (ContentBlock, bool) {
         let tool = tools.get(name).cloned();
         let (title, kind, locations) = match &tool {
-            Some(t) => (t.title(input), t.kind(), t.locations(input)),
+            // Absolute, so clients can open the file without knowing the session's cwd.
+            Some(t) => (
+                t.title(input),
+                t.kind(),
+                t.locations(input)
+                    .into_iter()
+                    .map(|p| s.cwd.join(p).to_string_lossy().into_owned())
+                    .collect(),
+            ),
             None => (name.to_string(), ToolKind::Other, vec![]),
         };
         client.send_event(
