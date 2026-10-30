@@ -193,7 +193,10 @@ fn trace(
                         node: n.clone(),
                         node_type: NodeType::End,
                         visit: state.visits.get(n).copied().unwrap_or(1),
-                        rendered: Some(Rendered::End { status: *status }),
+                        rendered: Some(Rendered::End {
+                            status: *status,
+                            reason: reason.clone().unwrap_or_default(),
+                        }),
                         mode: None,
                         assumed: None,
                         transition: None,

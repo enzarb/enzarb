@@ -225,7 +225,7 @@ fn wait_timeouts_take_the_timed_out_edge_and_keep_the_event() {
         RunStatus::Ended {
             status: EndStatus::Cancelled,
             node: Some("end_stale".into()),
-            reason: None
+            reason: Some("ended at `end_stale` (cancelled) after `wait_reply`".into())
         }
     );
     assert_eq!(s.event["name"], "issues");
@@ -353,4 +353,69 @@ fn a_start_node_that_is_an_end_ends_at_once() {
             ..
         }
     ));
+}
+
+const END_REASONS: &str = r#"
+version = 1
+[workflows.w]
+on = ["issues.labeled"]
+start = "a"
+[workflows.w.nodes.a]
+type = "command"
+task = "t"
+next = [{ if = "exit_code == 0", to = "ok" }, { if = "exit_code == 1", to = "custom" }, { if = "exit_code == 2", to = "bad" }, { to = "plain" }]
+[workflows.w.nodes.ok]
+type = "end"
+status = "done"
+[workflows.w.nodes.custom]
+type = "end"
+status = "failed"
+reason = "nothing to fix: {{ nodes.a.output }}"
+[workflows.w.nodes.bad]
+type = "end"
+status = "failed"
+reason = "{{ nodes.missing.x }}"
+[workflows.w.nodes.plain]
+type = "end"
+status = "failed"
+"#;
+
+fn end_reason_of(exit: i64) -> RunStatus {
+    let file = parse(END_REASONS).unwrap();
+    let e = Engine::new();
+    let mut s = RunState::start(&file, "w", &labeled(), run(false)).unwrap();
+    s.advance(&e, &file, json!({"exit_code": exit, "output": "no diff"}))
+        .unwrap();
+    s.status
+}
+
+#[test]
+fn end_reasons_render_or_default() {
+    let reason = |st: RunStatus| match st {
+        RunStatus::Ended { status, reason, .. } => (status, reason),
+        o => panic!("{o:?}"),
+    };
+    assert_eq!(reason(end_reason_of(0)), (EndStatus::Done, None));
+    assert_eq!(
+        reason(end_reason_of(1)),
+        (EndStatus::Failed, Some("nothing to fix: no diff".into()))
+    );
+    assert_eq!(
+        reason(end_reason_of(3)),
+        (
+            EndStatus::Failed,
+            Some("ended at `plain` (failed) after `a`".into())
+        )
+    );
+    let (st, r) = reason(end_reason_of(2));
+    assert_eq!(st, EndStatus::Failed);
+    assert!(r.unwrap().contains("reason"));
+}
+
+#[test]
+fn end_reason_is_validated() {
+    let bad = END_REASONS.replace("{{ nodes.a.output }}", "{{ bogus.x }}");
+    let file = parse(&bad).unwrap();
+    let rep = crate::validate::validate(&Engine::new(), &file, None);
+    assert!(!rep.is_ok(), "{rep:?}");
 }

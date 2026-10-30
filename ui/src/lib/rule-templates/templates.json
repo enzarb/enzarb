@@ -177,7 +177,8 @@
 				},
 				"failed": {
 					"type": "end",
-					"status": "failed"
+					"status": "failed",
+					"reason": "the implementer made no push for issue #{{ event.issue.number }}"
 				}
 			}
 		}
@@ -185,12 +186,12 @@
 	{
 		"id": "fix-failing-ci",
 		"title": "Fix failing CI",
-		"description": "When a CI run fails, try a fix and open a pull request.",
+		"description": "When the repository's own CI fails, try a fix and open a pull request against the default branch. The agent starts from the failing branch, but the fix is a separate pull request, not a push to that branch. Runs that fail for reasons outside the code (for example a rate-limited bot) end failed with the agent's explanation.",
 		"modes": [
 			{
 				"id": "ci-fixer",
 				"description": "Fixes a failing CI run",
-				"prompt": "Find why the CI run failed, fix the cause with the smallest change and run the tests.",
+				"prompt": "Find why the CI run failed, fix the cause with the smallest change and run the tests. Some failures have nothing to fix in code (a rate limit, an outage, a flaky service): then change nothing. Either way finish by submitting a result whose summary says what you found.",
 				"tools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
 				"miseTasks": ["test*"],
 				"mcpTools": ["mcp__enzarb__submit_result"],
@@ -204,13 +205,18 @@
 		"workflow": {
 			"description": "Fix failing CI runs",
 			"on": ["workflow_run.completed"],
-			"if": "event.workflow_run.conclusion == 'failure'",
+			"if": "event.workflow_run.conclusion == 'failure' and event.workflow_run.path is startingwith('.github/workflows/')",
 			"start": "fix",
 			"nodes": {
 				"fix": {
 					"type": "agent",
 					"mode": "ci-fixer",
 					"instruction": "The CI run {{ event.workflow_run.name }} failed on {{ event.workflow_run.head_branch }}. See {{ event.workflow_run.html_url }}.",
+					"result": {
+						"summary": {
+							"type": "string"
+						}
+					},
 					"push": true,
 					"next": [
 						{
@@ -235,7 +241,8 @@
 				},
 				"failed": {
 					"type": "end",
-					"status": "failed"
+					"status": "failed",
+					"reason": "the CI fixer found nothing to change in code: {{ nodes.fix.result.summary if nodes.fix.result is defined and nodes.fix.result else 'no summary was submitted' }}"
 				}
 			}
 		}

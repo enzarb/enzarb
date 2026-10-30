@@ -63,3 +63,52 @@ fn chat_example_is_valid() {
     let errors: Vec<_> = report.errors().collect();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+/// `fix-failing-ci` reacts to the repository's own workflow files, not to bots that also report
+/// as workflow runs (Copilot code review has `path = "dynamic/..."`).
+#[test]
+fn fix_failing_ci_ignores_runs_that_are_not_repository_workflows() {
+    let templates: Vec<Template> = serde_json::from_str(TEMPLATES).unwrap();
+    let t = templates.iter().find(|t| t.id == "fix-failing-ci").unwrap();
+    let cond = t.workflow["if"].as_str().unwrap();
+    let engine = Engine::new();
+    let eval = |conclusion: &str, path: &str| {
+        let ctx = serde_json::json!({"event": {"workflow_run": {"conclusion": conclusion, "path": path}}});
+        engine.eval_bool(cond, &ctx).unwrap()
+    };
+    assert!(eval("failure", ".github/workflows/ci.yml"));
+    assert!(!eval("success", ".github/workflows/ci.yml"));
+    assert!(!eval(
+        "failure",
+        "dynamic/agents/copilot-pull-request-reviewer"
+    ));
+}
+
+/// The failure end of `fix-failing-ci` explains itself, with or without a submitted result.
+#[test]
+fn fix_failing_ci_failure_reason_renders() {
+    let templates: Vec<Template> = serde_json::from_str(TEMPLATES).unwrap();
+    let t = templates.iter().find(|t| t.id == "fix-failing-ci").unwrap();
+    let reason = t.workflow["nodes"]["failed"]["reason"].as_str().unwrap();
+    let engine = Engine::new();
+    let render = |nodes: serde_json::Value| {
+        engine
+            .render(
+                ez_workflow::expr::TemplateKind::Text,
+                reason,
+                &serde_json::json!({ "nodes": nodes }),
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        render(serde_json::json!({"fix": {"result": {"summary": "rate limited"}}})),
+        "the CI fixer found nothing to change in code: rate limited"
+    );
+    assert!(
+        render(serde_json::json!({"fix": {"exit": "success"}}))
+            .ends_with("no summary was submitted")
+    );
+    assert!(
+        render(serde_json::json!({"fix": {"result": null}})).ends_with("no summary was submitted")
+    );
+}

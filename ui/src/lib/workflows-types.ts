@@ -56,7 +56,7 @@ export type NodeWire =
 			draft?: boolean | null;
 	  } & Visits)
 	| ({ type: 'wait'; on: string[]; if?: string | null; timeout?: string | null } & Visits)
-	| { type: 'end'; status: EndStatus };
+	| { type: 'end'; status: EndStatus; reason?: string | null };
 
 export interface WorkflowWire {
 	description?: string;
@@ -110,6 +110,8 @@ export interface NodeDoc {
 	if: string;
 	timeout: string;
 	status: EndStatus;
+	/** `end` nodes: a template saying why the run ends here; empty: a generic reason. */
+	reason: string;
 	next: EdgeDoc[];
 	max_visits: number | null;
 }
@@ -167,6 +169,7 @@ export function blankNode(id: string, type: NodeType = 'agent'): NodeDoc {
 		if: '',
 		timeout: '',
 		status: 'done',
+		reason: '',
 		next: [],
 		max_visits: null
 	};
@@ -220,6 +223,7 @@ function nodeFromWire(id: string, n: NodeWire): NodeDoc {
 			break;
 		case 'end':
 			d.status = n.status;
+			d.reason = n.reason ?? '';
 			return d;
 	}
 	d.next = edgesFrom(n.next);
@@ -259,7 +263,7 @@ function nextToWire(next: EdgeDoc[]): NextWire {
 }
 
 function nodeToWire(n: NodeDoc): NodeWire {
-	if (n.type === 'end') return { type: 'end', status: n.status };
+	if (n.type === 'end') return opt({ type: 'end', status: n.status }, 'reason', n.reason);
 	const tail = (o: object) => {
 		(o as Record<string, unknown>).next = nextToWire(n.next);
 		return opt(o, 'max_visits', n.max_visits);

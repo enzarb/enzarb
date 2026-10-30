@@ -68,6 +68,14 @@ describe('wire conversion', () => {
 			workflows: [{ ...blankWorkflow('w'), nodes: [{ ...n, type: 'end' }] }]
 		});
 		expect(asEnd.workflows!.w.nodes.a).toEqual({ type: 'end', status: 'done' });
+		const failed = { ...n, type: 'end' as const, status: 'failed' as const, reason: 'why {{ x }}' };
+		const wire = toWire({ workflows: [{ ...blankWorkflow('w'), nodes: [failed] }] });
+		expect(wire.workflows!.w.nodes.a).toEqual({
+			type: 'end',
+			status: 'failed',
+			reason: 'why {{ x }}'
+		});
+		expect(fromWire(wire).workflows[0].nodes[0].reason).toBe('why {{ x }}');
 		expect(
 			toWire({ workflows: [{ ...blankWorkflow('w'), nodes: [n] }] }).workflows!.w.nodes.a
 		).toMatchObject({ type: 'agent', mode: 'plan', next: [] });
