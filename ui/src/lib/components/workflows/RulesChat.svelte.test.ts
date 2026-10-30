@@ -239,4 +239,43 @@ describe('RulesChat', () => {
 		);
 		expect(t.calls).toEqual([]);
 	});
+
+	it('hides the context in the transcript but keeps the user text', async () => {
+		sessionStorage.clear();
+		const t = setup({ '.ez/workflows.toml': 'x', '.ez/modes.toml': 'y' });
+		render(RulesChat, t.props);
+		const box = page.getByRole('textbox', { name: 'Message' });
+		await expect.element(box).toBeEnabled();
+		await box.fill('add a review rule');
+		await page.getByRole('button', { name: 'Send' }).click();
+		await expect.element(page.getByText('Context: current rules and file formats')).toBeVisible();
+		await expect.element(page.getByText('add a review rule', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('When <events>')).not.toBeVisible();
+	});
+
+	it('asks the agent once, automatically, to fix invalid files, and offers a button', async () => {
+		sessionStorage.clear();
+		const t = setup({ '.ez/workflows.toml': 'bad', '.ez/modes.toml': 'y' });
+		t.props.check.checkRules.mockImplementation(async () => ({
+			ok: true as const,
+			diagnostics: [{ severity: 'error', message: 'invalid type: sequence' }],
+			file: null
+		}));
+		render(RulesChat, t.props);
+		const box = page.getByRole('textbox', { name: 'Message' });
+		await expect.element(box).toBeEnabled();
+		await box.fill('go');
+		await page.getByRole('button', { name: 'Send' }).click();
+		const fixes = () =>
+			t.ch.received
+				.filter((m) => m.method === 'session/prompt')
+				.filter((m) => JSON.stringify(m).includes('Your last edit')).length;
+		await vi.waitFor(() => expect(fixes()).toBe(1));
+		await expect.element(page.getByText(/invalid type: sequence/).first()).toBeVisible();
+		// the same errors after the fix turn do not trigger another automatic request
+		await new Promise((r) => setTimeout(r, 300));
+		expect(fixes()).toBe(1);
+		await page.getByRole('button', { name: 'Ask the agent to fix it' }).click();
+		await vi.waitFor(() => expect(fixes()).toBe(2));
+	});
 });

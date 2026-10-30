@@ -64,13 +64,16 @@
 	let steps = $state<StepItem[]>([]);
 	let saving = $state(false);
 	let conflict = $state(false);
+	let saveTried = $state(false);
 
 	const savedDoc = JSON.stringify(initial.doc);
+	// Something to commit: the form differs from the saved modes, or the TOML from the saved text.
 	const dirty = $derived(
-		tab === 'form'
-			? JSON.stringify(doc) !== savedDoc || initial.text === null
-			: text !== (initial.text ?? '')
+		tab === 'form' ? JSON.stringify(doc) !== savedDoc : text !== (initial.text ?? '')
 	);
+	// A repo with no modes file is not an error until the user edits something or picks a template.
+	const shownIssues = $derived(initial.text !== null || dirty || saveTried ? issues : []);
+	const blocked = $derived(tab === 'form' && (hasErrors(issues) || !doc.modes.length));
 	const ids = $derived(doc.modes.map((m) => m.id));
 	const templateSets = $derived([...new Set(initial.catalog.templates.map((t) => t.set))]);
 	const repoName = initial.repo.replace(/^github:/, '');
@@ -144,6 +147,7 @@
 
 	async function save() {
 		saving = true;
+		saveTried = true;
 		conflict = false;
 		steps = [
 			{ id: 'validate', status: 'active', label: 'Validate the modes' },
@@ -271,7 +275,7 @@
 
 	<Section title="Validation">
 		<IssueList
-			{issues}
+			issues={shownIssues}
 			select={(i) => {
 				if (tab === 'form') selected = i;
 			}}
@@ -288,7 +292,11 @@
 				disabled={saving}
 			/>
 			<div class="ez-cluster">
-				<Button variant="primary" disabled={!dirty || saving || switching} onclick={save}>
+				<Button
+					variant="primary"
+					disabled={!dirty || blocked || saving || switching}
+					onclick={save}
+				>
 					{saving ? 'Saving…' : `Commit to ${initial.branch}`}
 				</Button>
 				{#if conflict}<Button onclick={api.reload}>Reload the file</Button>{/if}

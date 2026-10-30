@@ -107,9 +107,23 @@ describe('ModesDesigner', () => {
 		render(ModesDesigner, { file: file(), api, saved: vi.fn() });
 		await page.getByRole('textbox', { name: 'Description' }).fill('changed');
 		await expect.element(page.getByText('unknown mode `nope`')).toBeInTheDocument();
-		await commit().click();
-		await expect.element(page.getByText('Fix the errors listed below.')).toBeInTheDocument();
+		await expect.element(commit()).toBeDisabled();
 		expect(api.save).not.toHaveBeenCalled();
+	});
+
+	it('shows no errors on a repo without modes until something is picked, and cannot commit', async () => {
+		const issues = [
+			{ path: 'modes', message: 'Define at least one mode', severity: 'error' as const }
+		];
+		const api = fakeApi({ validate: vi.fn(async () => ({ ok: true as const, issues })) });
+		render(ModesDesigner, {
+			file: file({ sha: null, text: null, doc: { defaultMode: '', modes: [] }, issues }),
+			api,
+			saved: vi.fn()
+		});
+		await expect.element(page.getByText('Start your modes')).toBeInTheDocument();
+		await expect.element(page.getByText('Define at least one mode')).not.toBeInTheDocument();
+		await expect.element(commit()).toBeDisabled();
 	});
 
 	it('offers Reload after a conflict', async () => {

@@ -10,11 +10,14 @@
 		items,
 		epoch,
 		onAnswer,
-		onAnswerQuestion = () => {}
+		onAnswerQuestion = () => {},
+		hideContext
 	}: {
 		items: ChatItem[];
 		epoch: number;
 		onAnswer: (id: string, choice: PermissionChoice, epoch: number) => void;
+		/** Splits a hidden context block off a user message; it is shown collapsed. */
+		hideContext?: (text: string) => { context: string; rest: string } | null;
 		onAnswerQuestion?: (id: string, answers: QuestionAnswer[] | null, epoch: number) => void;
 	} = $props();
 </script>
@@ -22,7 +25,16 @@
 <div class="ez-chat-log" role="log" aria-live="polite" aria-label="Conversation">
 	{#each items as item (item.id)}
 		{#if item.kind === 'user' || item.kind === 'agent' || item.kind === 'thought'}
-			<ChatMessage kind={item.kind} text={item.text} />
+			{@const split = item.kind === 'user' ? hideContext?.(item.text) : null}
+			{#if split}
+				<details class="ez-chat-context">
+					<summary>Context: current rules and file formats (show)</summary>
+					<pre>{split.context}</pre>
+				</details>
+				{#if split.rest}<ChatMessage kind="user" text={split.rest} />{/if}
+			{:else}
+				<ChatMessage kind={item.kind} text={item.text} />
+			{/if}
 		{:else if item.kind === 'tool'}
 			<ToolCall tool={item} />
 		{:else if item.kind === 'plan'}
