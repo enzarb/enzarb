@@ -14,6 +14,11 @@
 {{- if .Values.realtime.enabled }}
 {{- $roles = append $roles (dict "name" "realtime" "role" "enzarb_realtime") }}
 {{- end }}
+{{- /* tracks (ADR-0029) owns schema `tracks` and reads connectors.event_v (granted by the connectors migration); only with event routing on. */}}
+{{- if include "enzarb.tracksRouting" . }}
+{{- $roles = append $roles (dict "name" "tracks-owner" "role" "enzarb_tracks_owner") }}
+{{- $roles = append $roles (dict "name" "tracks" "role" "enzarb_tracks") }}
+{{- end }}
 apiVersion: pgop.ruck.io/v1alpha1
 kind: Cluster
 metadata:
@@ -76,6 +81,9 @@ spec:
         {{- if .Values.realtime.enabled }}
         - { role: enzarb_realtime, privileges: [USAGE] }
         {{- end }}
+        {{- if include "enzarb.tracksRouting" . }}
+        - { role: enzarb_tracks, privileges: [USAGE] }
+        {{- end }}
     - name: app
       owner: enzarb_ui_owner
       grants:
@@ -85,4 +93,10 @@ spec:
       grants:
         - { role: enzarb_ui, privileges: [USAGE] }
         - { role: enzarb_sandbox_proxy, privileges: [USAGE] }
+{{- if include "enzarb.tracksRouting" . }}
+    - name: tracks
+      owner: enzarb_tracks_owner
+      grants:
+        - { role: enzarb_tracks, privileges: [USAGE] }
+{{- end }}
 {{- end }}

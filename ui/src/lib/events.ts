@@ -58,3 +58,43 @@ export function summarizeEvent(payload: unknown): string | null {
 	}
 	return null;
 }
+
+/** One workflow's trigger evaluation (`on` / `if`), as tracks recorded it. */
+export interface DecisionReason {
+	workflow: string;
+	matched: boolean;
+	on: string | null;
+	reason: string;
+}
+
+/** What tracks decided about one event (ADR-0029 section 5; `GET /v1/decisions`). */
+export interface EventDecision {
+	eventId: number;
+	/** `started` (a run was created), `no_match`, `skipped` (the event names no repository), `error`. */
+	outcome: 'started' | 'no_match' | 'skipped' | 'error';
+	project: string | null;
+	/** Default-branch commit the workflow files were read at. */
+	sha: string | null;
+	/** Workflows that started a run. */
+	started: string[];
+	reasons: DecisionReason[];
+	errors: string[];
+	decidedAt: string;
+}
+
+/** The headline for a decision: "Started fix-issue", "No rule matched", or the failure. */
+export function decisionHeadline(d: EventDecision): {
+	text: string;
+	tone: 'ok' | 'muted' | 'error';
+} {
+	switch (d.outcome) {
+		case 'started':
+			return { text: `Started ${d.started.join(', ')}`, tone: 'ok' };
+		case 'error':
+			return { text: 'Could not route this event', tone: 'error' };
+		case 'skipped':
+			return { text: 'Not routed (no repository)', tone: 'muted' };
+		default:
+			return { text: 'No rule matched', tone: 'muted' };
+	}
+}

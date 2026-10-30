@@ -15,6 +15,16 @@ pub struct Config {
     /// Bearer token the UI sends (`ENZARB_TRACKS_TOKEN`).
     pub token: Vec<u8>,
     pub max_body_bytes: usize,
+    /// Route connector events to workflows (`ENZARB_TRACKS_ROUTING`); needs Postgres.
+    pub routing: bool,
+    /// GitHub App credentials for reading `.ez/*.toml` (optional; without them routing records
+    /// an error decision per event).
+    pub github_app_id: Option<String>,
+    pub github_app_private_key: Option<String>,
+    /// Most events routed at once (`ENZARB_TRACKS_CONCURRENCY`).
+    pub concurrency: usize,
+    /// Seconds between catch-up sweeps (`ENZARB_TRACKS_SWEEP_SECS`).
+    pub sweep_secs: u64,
 }
 
 impl std::fmt::Debug for Config {
@@ -23,6 +33,11 @@ impl std::fmt::Debug for Config {
             .field("listen", &self.listen)
             .field("token", &"<redacted>")
             .field("max_body_bytes", &self.max_body_bytes)
+            .field("routing", &self.routing)
+            .field("github_app_id", &self.github_app_id)
+            .field("github_app_private_key", &"<redacted>")
+            .field("concurrency", &self.concurrency)
+            .field("sweep_secs", &self.sweep_secs)
             .finish()
     }
 }
@@ -55,10 +70,36 @@ impl Config {
             max_body_bytes >= 64 * 1024,
             "ENZARB_TRACKS_MAX_BODY_BYTES must be at least 65536"
         );
+        let routing = match get("ENZARB_TRACKS_ROUTING").as_deref() {
+            None | Some("false") | Some("0") => false,
+            Some("true") | Some("1") => true,
+            Some(v) => anyhow::bail!("invalid ENZARB_TRACKS_ROUTING {v:?} (true or false)"),
+        };
+        let concurrency = match get("ENZARB_TRACKS_CONCURRENCY") {
+            Some(v) => v.parse().context("invalid ENZARB_TRACKS_CONCURRENCY")?,
+            None => 4,
+        };
+        ensure!(
+            (1..=64).contains(&concurrency),
+            "ENZARB_TRACKS_CONCURRENCY must be 1-64"
+        );
+        let sweep_secs = match get("ENZARB_TRACKS_SWEEP_SECS") {
+            Some(v) => v.parse().context("invalid ENZARB_TRACKS_SWEEP_SECS")?,
+            None => 30,
+        };
+        ensure!(
+            sweep_secs >= 1,
+            "ENZARB_TRACKS_SWEEP_SECS must be at least 1"
+        );
         Ok(Self {
             listen,
             token,
             max_body_bytes,
+            routing,
+            github_app_id: get("ENZARB_GITHUB_APP_ID"),
+            github_app_private_key: get("ENZARB_GITHUB_APP_PRIVATE_KEY"),
+            concurrency,
+            sweep_secs,
         })
     }
 }
@@ -83,6 +124,14 @@ mod tests {
         let c = cfg(&[("ENZARB_TRACKS_TOKEN", TOKEN)]).unwrap();
         assert_eq!(c.listen.to_string(), "0.0.0.0:8080");
         assert_eq!(c.max_body_bytes, DEFAULT_MAX_BODY_BYTES);
+        assert!(!c.routing);
+        assert_eq!((c.concurrency, c.sweep_secs), (4, 30));
+        let r = cfg(&[
+            ("ENZARB_TRACKS_TOKEN", TOKEN),
+            ("ENZARB_TRACKS_ROUTING", "true"),
+        ])
+        .unwrap();
+        assert!(r.routing);
         assert!(!format!("{c:?}").contains(TOKEN));
         let c = cfg(&[
             ("ENZARB_TRACKS_TOKEN", TOKEN),

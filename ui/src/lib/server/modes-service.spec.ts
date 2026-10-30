@@ -53,6 +53,7 @@ beforeEach(() => {
 		return json(500, {});
 	});
 	tracks = {
+		decisions: vi.fn(async () => []),
 		modesCatalog: vi.fn(async () => catalog),
 		parseModes: vi.fn(async () => ({ doc, issues: [] })),
 		validateModes: vi.fn(async () => []),

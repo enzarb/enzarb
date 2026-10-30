@@ -17,6 +17,7 @@ use ez_workflow::validate::{Diagnostic, Severity};
 use ez_workflow::{DryRunOptions, Engine, Event, ModeCatalog, Report, TriggerEval, WorkflowsFile};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sqlx::Row;
 use subtle::ConstantTimeEq;
 
 /// Most events in one dry-run request.
@@ -26,6 +27,8 @@ pub const MAX_DRY_RUN_EVENTS: usize = 50;
 pub struct AppState {
     pub token: Arc<Vec<u8>>,
     pub engine: Arc<Engine>,
+    /// Postgres, when routing is on; `/v1/decisions` and `event_ids` need it.
+    pub pool: Option<sqlx::PgPool>,
 }
 
 impl AppState {
@@ -33,7 +36,13 @@ impl AppState {
         Self {
             token: Arc::new(token),
             engine: Arc::new(Engine::new()),
+            pool: None,
         }
+    }
+
+    pub fn with_pool(mut self, pool: sqlx::PgPool) -> Self {
+        self.pool = Some(pool);
+        self
     }
 }
 
@@ -46,6 +55,7 @@ pub fn router(state: AppState, max_body_bytes: usize) -> Router {
         .route("/v1/workflows/check", post(workflows_check))
         .route("/v1/workflows/render", post(workflows_render))
         .route("/v1/dry-run", post(dry_run))
+        .route("/v1/decisions", get(decisions))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -346,7 +356,12 @@ struct DryRunReq {
     workflows_toml: String,
     #[serde(default)]
     modes_toml: Option<String>,
+    #[serde(default)]
     events: Vec<DryRunEvent>,
+    /// Logged events to read from `connectors.event_v` (needs routing's database); added to
+    /// `events`. The caller has checked they belong to the Project.
+    #[serde(default)]
+    event_ids: Vec<i64>,
     #[serde(default)]
     options: DryRunOptions,
 }
@@ -371,7 +386,32 @@ async fn dry_run(
     State(s): State<AppState>,
     body: Result<Json<DryRunReq>, JsonRejection>,
 ) -> ApiResult<DryRunResp> {
-    let Json(req) = body?;
+    let Json(mut req) = body?;
+    if !req.event_ids.is_empty() {
+        if req.event_ids.len() > MAX_DRY_RUN_EVENTS {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("send 1-{MAX_DRY_RUN_EVENTS} events"),
+            ));
+        }
+        let pool = s.pool.as_ref().ok_or_else(no_database)?;
+        let rows = sqlx::query(
+            "SELECT id, event, action, payload FROM connectors.event_v WHERE id = ANY($1) ORDER BY id",
+        )
+        .bind(&req.event_ids)
+        .fetch_all(pool)
+        .await
+        .map_err(db_error)?;
+        for r in rows {
+            req.events.push(DryRunEvent {
+                id: r.get("id"),
+                event: r.get("event"),
+                action: r.get("action"),
+                payload: r.get("payload"),
+            });
+        }
+    }
     if req.events.is_empty() || req.events.len() > MAX_DRY_RUN_EVENTS {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -422,4 +462,104 @@ async fn dry_run(
     })
     .await?;
     Ok(Json(resp))
+}
+
+// ----- decisions -----
+
+/// Most event ids in one `/v1/decisions` request.
+pub const MAX_DECISION_IDS: usize = 200;
+
+fn no_database() -> ApiError {
+    ApiError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "routing_disabled",
+        "event routing (and its database) is not enabled on this tracks",
+    )
+}
+
+fn db_error(e: sqlx::Error) -> ApiError {
+    tracing::error!(error = %e, "database error");
+    ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "internal",
+        "database error",
+    )
+}
+
+#[derive(Deserialize)]
+struct DecisionsQuery {
+    /// Comma-separated connector event ids.
+    event_ids: String,
+}
+
+#[derive(Serialize)]
+struct DecisionOut {
+    event_id: i64,
+    repo: Option<String>,
+    project: Option<String>,
+    sha: Option<String>,
+    /// `started`, `no_match`, `skipped` or `error`.
+    outcome: String,
+    matched: Value,
+    reasons: Value,
+    errors: Value,
+    decided_at: String,
+}
+
+#[derive(Serialize)]
+struct DecisionsResp {
+    decisions: Vec<DecisionOut>,
+}
+
+/// The decisions recorded for the given events; events with none yet are simply absent.
+async fn decisions(
+    State(s): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<DecisionsQuery>,
+) -> ApiResult<DecisionsResp> {
+    let ids: Result<Vec<i64>, _> = q
+        .event_ids
+        .split(',')
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .map(str::parse::<i64>)
+        .collect();
+    let ids = ids.map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "event_ids must be integers",
+        )
+    })?;
+    if ids.is_empty() || ids.len() > MAX_DECISION_IDS {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("send 1-{MAX_DECISION_IDS} event ids"),
+        ));
+    }
+    let pool = s.pool.as_ref().ok_or_else(no_database)?;
+    let rows = sqlx::query(
+        "SELECT event_id, repo, project, sha, outcome, matched, reasons, errors,
+                to_char(decided_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS decided_at
+           FROM tracks.event_decisions WHERE event_id = ANY($1) ORDER BY event_id DESC",
+    )
+    .bind(&ids)
+    .fetch_all(pool)
+    .await
+    .map_err(db_error)?;
+    let decisions = rows
+        .into_iter()
+        .map(|r| DecisionOut {
+            event_id: r.get("event_id"),
+            repo: r.get("repo"),
+            project: r.get("project"),
+            sha: r.get("sha"),
+            outcome: r.get("outcome"),
+            matched: r.get("matched"),
+            reasons: r.get("reasons"),
+            errors: r.get("errors"),
+            decided_at: r.get("decided_at"),
+        })
+        .collect();
+    Ok(Json(DecisionsResp { decisions }))
 }

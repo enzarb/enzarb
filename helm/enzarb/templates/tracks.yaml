@@ -1,5 +1,6 @@
 {{- if .Values.tracks.enabled }}
 {{- $c := .Values.tracks }}
+{{- $routing := include "enzarb.tracksRouting" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,7 +8,8 @@ metadata:
   labels:
     {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-tracks") | nindent 4 }}
 spec:
-  # Stateless: validation, rendering and dry runs are pure functions of the request.
+  # The API is stateless; routing is safe with several replicas (each event is decided once, by
+  # the primary key of tracks.event_decisions), though one is plenty.
   replicas: {{ $c.replicaCount }}
   {{- include "enzarb.rollout" $c | nindent 2 }}
   selector:
@@ -19,9 +21,13 @@ spec:
         {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-tracks") | nindent 8 }}
     spec:
       serviceAccountName: enzarb-tracks
-      automountServiceAccountToken: false
+      # Routing reads Project CRs through the API server; without it tracks needs no API access.
+      automountServiceAccountToken: {{ if $routing }}true{{ else }}false{{ end }}
       terminationGracePeriodSeconds: {{ $c.terminationGracePeriodSeconds }}
       {{- include "enzarb.pullSecrets" . | nindent 6 }}
+      {{- if $routing }}
+      {{- include "enzarb.waitMigrations" . | nindent 6 }}
+      {{- end }}
       containers:
         - name: tracks
           image: {{ include "enzarb.image" $c }}
@@ -30,6 +36,13 @@ spec:
             - { name: http, containerPort: 8080 }
           env:
             {{- include "enzarb.secretEnv" (dict "name" "ENZARB_TRACKS_TOKEN" "secret" (include "enzarb.tracksTokenSecret" .) "key" (include "enzarb.tracksTokenKey" .)) | nindent 12 }}
+            {{- if $routing }}
+            {{- include "enzarb.dbEnv" (dict "ctx" . "role" "tracks") | nindent 12 }}
+            {{- include "enzarb.secretEnv" (dict "name" "ENZARB_GITHUB_APP_ID" "optional" true "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "appId"))) | nindent 12 }}
+            {{- include "enzarb.secretEnv" (dict "name" "ENZARB_GITHUB_APP_PRIVATE_KEY" "optional" true "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "privateKey"))) | nindent 12 }}
+            - { name: ENZARB_TRACKS_ROUTING, value: "true" }
+            - { name: ENZARB_TRACKS_CONCURRENCY, value: {{ $c.routing.concurrency | quote }} }
+            {{- end }}
             - { name: RUST_LOG, value: {{ .Values.rustLog | quote }} }
             {{- with $c.extraEnv }}
             {{- toYaml . | nindent 12 }}

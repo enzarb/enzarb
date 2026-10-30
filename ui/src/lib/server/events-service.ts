@@ -47,6 +47,14 @@ export function eventsService(sql: Sql) {
 				receivedAt: new Date(r.received_at).toISOString()
 			}));
 		},
+		/** The subset of `ids` that are events of `repos`. */
+		async idsIn(repos: string[], ids: number[]): Promise<number[]> {
+			if (repos.length === 0 || ids.length === 0) return [];
+			const rows = await sql<{ id: string | number }[]>`
+				SELECT id FROM connectors.event_v
+				WHERE id = ANY(${sql.array(ids, 20)}) AND repo = ANY(${sql.array(repos, 25)})`;
+			return rows.map((r) => Number(r.id));
+		},
 		/** The raw payload of one event, only when it belongs to one of `repos`. */
 		async payload(repos: string[], id: number): Promise<unknown | null> {
 			if (repos.length === 0) return null;

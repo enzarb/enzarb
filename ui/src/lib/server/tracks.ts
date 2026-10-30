@@ -1,4 +1,5 @@
 import { getConfig, type TracksConfig } from './config.ts';
+import type { EventDecision } from '#lib/events.ts';
 import type { ModeIssue, ModesCatalog, ModesDoc } from '#lib/modes-types.ts';
 import type {
 	Diagnostic,
@@ -53,6 +54,8 @@ export interface TracksClient {
 		file: WorkflowsFileWire,
 		modes: string | null
 	): Promise<{ text: string; diagnostics: Diagnostic[] }>;
+	/** What routing decided about each event; events with no decision yet are absent. */
+	decisions(eventIds: number[]): Promise<EventDecision[]>;
 	/** Triggers and traces of `text` for 1-50 logged events; no side effects. */
 	dryRun(input: {
 		text: string;
@@ -60,6 +63,17 @@ export interface TracksClient {
 		events: { id: number; event: string; action: string | null; payload: unknown }[];
 		options?: DryRunOptions;
 	}): Promise<DryRunResponse>;
+}
+
+interface WireDecision {
+	event_id: number;
+	outcome: EventDecision['outcome'];
+	project: string | null;
+	sha: string | null;
+	matched: string[];
+	reasons: { workflow: string; matched: boolean; on?: string | null; reason: string }[];
+	errors: string[];
+	decided_at: string;
 }
 
 const withModes = (modes: string | null) => (modes === null ? {} : { modes_toml: modes });
@@ -121,6 +135,27 @@ export function createTracksClient(
 				{ file, ...withModes(modes) }
 			);
 			return { text: r.text, diagnostics: r.report.diagnostics };
+		},
+		decisions: async (eventIds) => {
+			if (eventIds.length === 0) return [];
+			const r = await call<{ decisions: WireDecision[] }>(
+				`/v1/decisions?event_ids=${eventIds.join(',')}`
+			);
+			return r.decisions.map((d) => ({
+				eventId: d.event_id,
+				outcome: d.outcome,
+				project: d.project,
+				sha: d.sha,
+				started: d.matched,
+				reasons: d.reasons.map((x) => ({
+					workflow: x.workflow,
+					matched: x.matched,
+					on: x.on ?? null,
+					reason: x.reason
+				})),
+				errors: d.errors,
+				decidedAt: d.decided_at
+			}));
 		},
 		dryRun: ({ text, modes, events, options }) =>
 			call(
