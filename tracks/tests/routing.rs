@@ -167,8 +167,8 @@ async fn routes_events_and_records_decisions() {
     assert!(reasons[0]["reason"].as_str().unwrap().contains("is false"));
 
     let (outcome, _, _, errors, project) = decision(&pool, nobody).await;
-    assert_eq!(outcome, "error");
-    assert!(errors[0].as_str().unwrap().contains("no Project owns x/y"));
+    assert_eq!(outcome, "skipped");
+    assert_eq!(errors, json!([]));
     assert!(project.is_none());
 
     assert_eq!(decision(&pool, no_repo).await.0, "skipped");
