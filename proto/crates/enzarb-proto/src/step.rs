@@ -110,7 +110,7 @@ pub enum StepExec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<String>,
         /// Run the agent as unattended `ez acp` with these pinned copies (`ez_steps`).
-        /// `runtime` is then only validated, not launched.
+        /// `runtime` must still be present but is neither validated nor launched.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ez: Option<EzSpec>,
     },

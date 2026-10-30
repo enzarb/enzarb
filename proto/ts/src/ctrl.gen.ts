@@ -172,7 +172,7 @@ result_schema?: JsonValue | null,
 mode?: string | null, 
 /**
  * Run the agent as unattended `ez acp` with these pinned copies (`ez_steps`).
- * `runtime` is then only validated, not launched.
+ * `runtime` must still be present but is neither validated nor launched.
  */
 ez?: EzSpec | null, } | { "kind": "command", run: string, 
 /**
