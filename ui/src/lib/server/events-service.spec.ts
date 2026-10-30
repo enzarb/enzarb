@@ -80,4 +80,14 @@ describe('eventsService (connectors.event_v)', () => {
 		]);
 		expect(await svc().withPayloads(['octo/app'], [])).toEqual([]);
 	});
+
+	it('keeps only the ids that are events of the given repositories', async () => {
+		const a = await seedEvent(sql as unknown as Sql, { repo: 'octo/app', event: 'push' });
+		const b = await seedEvent(sql as unknown as Sql, { repo: 'octo/app', event: 'issues' });
+		const other = await seedEvent(sql as unknown as Sql, { repo: 'octo/other', event: 'push' });
+		const ids = await svc().idsIn(['octo/app'], [a, other, b, 999_999]);
+		expect(ids.sort((x, y) => x - y)).toEqual([a, b].sort((x, y) => x - y));
+		expect(await svc().idsIn(['octo/app'], [])).toEqual([]);
+		expect(await svc().idsIn([], [a])).toEqual([]);
+	});
 });

@@ -1,0 +1,28 @@
+default_mode = "reviewer"
+
+[modes.reviewer]
+description = "Reviews a pull request"
+prompt = "Review the change for correctness, tests and clarity. Be specific and brief. Do not edit files."
+tools = ["Read", "Glob", "Grep"]
+
+[modes.triager]
+description = "Understands and summarises an issue"
+prompt = "Read the issue and the code it concerns. Summarise it in two or three sentences and say what it needs."
+tools = ["Read", "Glob", "Grep"]
+
+[modes.planner]
+description = "Plans a change"
+prompt = "Read the issue and the code and write a short plan. Do not edit files."
+tools = ["Read", "Glob", "Grep"]
+
+[modes.implementer]
+description = "Makes the change"
+prompt = "Implement the plan with small, tested changes."
+tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
+mise_tasks = ["test*"]
+
+[modes.ci-fixer]
+description = "Fixes a failing CI run"
+prompt = "Find why the CI run failed, fix the cause with the smallest change and run the tests."
+tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
+mise_tasks = ["test*"]

@@ -24,7 +24,8 @@ export async function updateRequested<T>(
 	defaultKey: string | undefined,
 	value: T | undefined
 ) {
-	for (const e of requested(query, LIMIT)) {
+	// Async iteration: the query schemas validate asynchronously, which sync iteration rejects.
+	for await (const e of requested(query, LIMIT)) {
 		const repo = (e.arg.repo ?? defaultKey)?.toLowerCase();
 		if (e.arg.name !== name || repo !== key) {
 			e.ignore();

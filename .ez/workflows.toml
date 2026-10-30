@@ -1,0 +1,141 @@
+version = 1
+
+[workflows.review-pull-requests]
+description = "Review pull requests"
+on = ["pull_request.opened", "pull_request.synchronize"]
+start = "review"
+
+[workflows.review-pull-requests.nodes.review]
+type = "agent"
+mode = "reviewer"
+instruction = """
+Review pull request #{{ event.pull_request.number }}: {{ event.pull_request.title }}
+
+{{ event.pull_request.body }}"""
+next = "comment"
+
+[workflows.review-pull-requests.nodes.review.result.summary]
+type = "string"
+
+[workflows.review-pull-requests.nodes.comment]
+type = "action"
+action = "comment"
+body = "{{ nodes.review.result.summary }}"
+next = "done"
+
+[workflows.review-pull-requests.nodes.done]
+type = "end"
+status = "done"
+
+[workflows.triage-issues]
+description = "Triage new issues"
+on = ["issues.opened"]
+start = "triage"
+
+[workflows.triage-issues.nodes.triage]
+type = "agent"
+mode = "triager"
+instruction = """
+Issue #{{ event.issue.number }}: {{ event.issue.title }}
+
+{{ event.issue.body }}"""
+next = "label"
+
+[workflows.triage-issues.nodes.triage.result.summary]
+type = "string"
+
+[workflows.triage-issues.nodes.label]
+type = "action"
+action = "add_labels"
+labels = ["triage"]
+next = "comment"
+
+[workflows.triage-issues.nodes.comment]
+type = "action"
+action = "comment"
+body = "{{ nodes.triage.result.summary }}"
+next = "done"
+
+[workflows.triage-issues.nodes.done]
+type = "end"
+status = "done"
+
+[workflows.implement-labeled-issues]
+description = "Implement issues labelled ez and open a pull request"
+on = ["issues.labeled"]
+if = "event.label.name == 'ez'"
+start = "plan"
+
+[workflows.implement-labeled-issues.nodes.plan]
+type = "agent"
+mode = "planner"
+instruction = """
+Issue #{{ event.issue.number }}: {{ event.issue.title }}
+
+{{ event.issue.body }}"""
+next = "implement"
+
+[workflows.implement-labeled-issues.nodes.plan.result.plan]
+type = "string"
+
+[workflows.implement-labeled-issues.nodes.implement]
+type = "agent"
+mode = "implementer"
+instruction = "Implement issue #{{ event.issue.number }}. Plan: {{ nodes.plan.result.plan }}"
+push = true
+
+[[workflows.implement-labeled-issues.nodes.implement.next]]
+if = "git.pushed"
+to = "open_pr"
+
+[[workflows.implement-labeled-issues.nodes.implement.next]]
+to = "failed"
+
+[workflows.implement-labeled-issues.nodes.open_pr]
+type = "action"
+action = "open_pull_request"
+title = "Fix #{{ event.issue.number }}: {{ event.issue.title }}"
+body = "Closes #{{ event.issue.number }}"
+next = "done"
+
+[workflows.implement-labeled-issues.nodes.done]
+type = "end"
+status = "done"
+
+[workflows.implement-labeled-issues.nodes.failed]
+type = "end"
+status = "failed"
+
+[workflows.fix-failing-ci]
+description = "Fix failing CI runs"
+on = ["workflow_run.completed"]
+if = "event.workflow_run.conclusion == 'failure'"
+start = "fix"
+
+[workflows.fix-failing-ci.nodes.fix]
+type = "agent"
+mode = "ci-fixer"
+instruction = "The CI run {{ event.workflow_run.name }} failed on {{ event.workflow_run.head_branch }}. See {{ event.workflow_run.html_url }}."
+push = true
+
+[[workflows.fix-failing-ci.nodes.fix.next]]
+if = "git.pushed"
+to = "open_pr"
+
+[[workflows.fix-failing-ci.nodes.fix.next]]
+to = "failed"
+
+[workflows.fix-failing-ci.nodes.open_pr]
+type = "action"
+action = "open_pull_request"
+title = "Fix failing {{ event.workflow_run.name }}"
+body = "Fixes {{ event.workflow_run.html_url }}"
+next = "done"
+
+[workflows.fix-failing-ci.nodes.done]
+type = "end"
+status = "done"
+
+[workflows.fix-failing-ci.nodes.failed]
+type = "end"
+status = "failed"
