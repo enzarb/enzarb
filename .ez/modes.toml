@@ -27,7 +27,7 @@ mcp_tools = ["mcp__enzarb__submit_result"]
 
 [modes.ci-fixer]
 description = "Fixes a failing CI run"
-prompt = "Find why the CI run failed, fix the cause with the smallest change and run the tests."
+prompt = "Find why the CI run failed, fix the cause with the smallest change and run the tests. Some failures have nothing to fix in code (a rate limit, an outage, a flaky service): then change nothing. Either way finish by submitting a result whose summary says what you found."
 tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
 mise_tasks = ["test*"]
 mcp_tools = ["mcp__enzarb__submit_result"]
