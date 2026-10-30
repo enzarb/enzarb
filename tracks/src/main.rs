@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use enzarb_tracks::actions::{Actions, GithubActions, NoActions};
 use enzarb_tracks::exec::{ExecConfig, Executor};
 use enzarb_tracks::github::{GithubApp, NoApp, RepoSource};
 use enzarb_tracks::projects::KubeProjects;
@@ -47,8 +48,14 @@ async fn main() -> Result<()> {
             (cfg.concurrency as u32 + 4 + runs).min(64),
         )
         .await?;
+        let api = std::env::var("ENZARB_GITHUB_API_URL")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "https://api.github.com".into());
         let source: Arc<dyn RepoSource> = match (&cfg.github_app_id, &cfg.github_app_private_key) {
-            (Some(id), Some(key)) => Arc::new(GithubApp::new(id, key).context("GitHub App key")?),
+            (Some(id), Some(key)) => {
+                Arc::new(GithubApp::with_base(id, key, &api).context("GitHub App key")?)
+            }
             _ => {
                 tracing::warn!("no GitHub App configured; every event will get an error decision");
                 Arc::new(NoApp)
@@ -63,17 +70,26 @@ async fn main() -> Result<()> {
                     .context("Claude keyring")?;
             let store = Arc::new(enzarb_sandbox_proxy::store::PgStore::from_env()?);
             let creds = enzarb_sandbox_proxy::store::Credentials::new(store, Arc::new(keyring));
-            let ex = Arc::new(Executor::new(
-                pool.clone(),
-                source.clone(),
-                projects.clone(),
-                Arc::new(KubeSandboxes::new().await.context("Kubernetes client")?),
-                Arc::new(StoredTokens::new(creds).await?),
-                ExecConfig {
-                    concurrency: cfg.run_concurrency,
-                    ..ExecConfig::default()
-                },
-            ));
+            // Same condition as `source`: without both id and key there is no App to act with.
+            let actions: Arc<dyn Actions> = match (&cfg.github_app_id, &cfg.github_app_private_key)
+            {
+                (Some(_), Some(_)) => Arc::new(GithubActions::new(source.clone(), &api)?),
+                _ => Arc::new(NoActions),
+            };
+            let ex = Arc::new(
+                Executor::new(
+                    pool.clone(),
+                    source.clone(),
+                    projects.clone(),
+                    Arc::new(KubeSandboxes::new().await.context("Kubernetes client")?),
+                    Arc::new(StoredTokens::new(creds).await?),
+                    ExecConfig {
+                        concurrency: cfg.run_concurrency,
+                        ..ExecConfig::default()
+                    },
+                )
+                .with_actions(actions),
+            );
             exec_task = Some(tokio::spawn(ex.run(stop_rx.clone())));
             tracing::info!(concurrency = cfg.run_concurrency, "run executor on");
         }

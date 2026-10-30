@@ -59,6 +59,7 @@ describe('EventLog', () => {
 			started: [],
 			reasons: [],
 			errors: [],
+			resumed: [],
 			decidedAt: '2026-10-21T12:00:01.000Z',
 			...over
 		});
@@ -94,6 +95,27 @@ describe('EventLog', () => {
 		await expect.element(page.getByText('Started fix-issue')).toBeVisible();
 		await expect.element(page.getByText('No rule matched')).toBeVisible();
 		await expect.element(page.getByText(/`push` is not in on/)).toBeVisible();
+	});
+
+	it('shows which run an event resumed', async () => {
+		render(EventLog, {
+			...base,
+			rows: [row()],
+			decisions: {
+				1: {
+					eventId: 1,
+					outcome: 'resumed',
+					project: 'p',
+					sha: 'abc1234',
+					started: [],
+					reasons: [],
+					errors: [],
+					resumed: [{ run: '11111111-aaaa-4bbb-8ccc-222222222222', workflow: 'fix', node: 'w' }],
+					decidedAt: '2026-10-21T12:00:01.000Z'
+				}
+			}
+		});
+		await expect.element(page.getByText('Resumed run 11111111 (fix, w)')).toBeVisible();
 	});
 
 	it('shows no decision for an event tracks has not decided yet', async () => {

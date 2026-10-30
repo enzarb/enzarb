@@ -70,6 +70,18 @@ pub trait RepoSource: Send + Sync {
             "minting tokens is not supported by this source".into(),
         ))
     }
+
+    /// A fresh installation token scoped to `repo` with exactly `permissions` (for example
+    /// `[("issues", "write")]`), for `action` nodes. It never enters the sandbox.
+    async fn action_token(
+        &self,
+        _repo: &str,
+        _permissions: &[(&str, &str)],
+    ) -> Result<String, SourceError> {
+        Err(SourceError::Permanent(
+            "minting tokens is not supported by this source".into(),
+        ))
+    }
 }
 
 /// A source for installations without a GitHub App: every read is a permanent error.
@@ -206,7 +218,11 @@ impl GithubApp {
         Ok(id)
     }
 
-    async fn mint(&self, repo: &str, permission: &str) -> Result<String, SourceError> {
+    async fn mint(
+        &self,
+        repo: &str,
+        permissions: serde_json::Value,
+    ) -> Result<String, SourceError> {
         let id = self.installation(repo).await?;
         let name = repo.split_once('/').map_or(repo, |(_, n)| n);
         let res = self
@@ -217,7 +233,7 @@ impl GithubApp {
             ))
             .bearer_auth(self.jwt()?)
             .header("Accept", "application/vnd.github+json")
-            .json(&json!({ "repositories": [name], "permissions": { "contents": permission } }))
+            .json(&json!({ "repositories": [name], "permissions": permissions }))
             .send()
             .await
             .map_err(|e| transient("token mint", e))?;
@@ -359,7 +375,20 @@ impl RepoSource for GithubApp {
     }
 
     async fn clone_token(&self, repo: &str, write: bool) -> Result<String, SourceError> {
-        self.mint(repo, if write { "write" } else { "read" }).await
+        let p = if write { "write" } else { "read" };
+        self.mint(repo, json!({ "contents": p })).await
+    }
+
+    async fn action_token(
+        &self,
+        repo: &str,
+        permissions: &[(&str, &str)],
+    ) -> Result<String, SourceError> {
+        let map: serde_json::Map<String, serde_json::Value> = permissions
+            .iter()
+            .map(|(k, v)| (k.to_string(), json!(v)))
+            .collect();
+        self.mint(repo, serde_json::Value::Object(map)).await
     }
 }
 

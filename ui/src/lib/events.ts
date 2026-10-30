@@ -70,8 +70,8 @@ export interface DecisionReason {
 /** What tracks decided about one event (ADR-0029 section 5; `GET /v1/decisions`). */
 export interface EventDecision {
 	eventId: number;
-	/** `started` (a run was created), `no_match`, `skipped` (the event names no repository), `error`. */
-	outcome: 'started' | 'no_match' | 'skipped' | 'error';
+	/** `started` (a run was created), `no_match`, `skipped` (the event names no repository), `error`, `resumed` (a run waiting for it went on). */
+	outcome: 'started' | 'no_match' | 'skipped' | 'error' | 'resumed';
 	project: string | null;
 	/** Default-branch commit the workflow files were read at. */
 	sha: string | null;
@@ -79,7 +79,16 @@ export interface EventDecision {
 	started: string[];
 	reasons: DecisionReason[];
 	errors: string[];
+	/** Runs this event resumed out of a `wait` node. */
+	resumed: { run: string; workflow: string; node: string }[];
 	decidedAt: string;
+}
+
+/** "Resumed run 1111aaaa (fix-issue, wait_reply)", one per run the event resumed. */
+export function resumedText(d: Pick<EventDecision, 'resumed'>): string {
+	return d.resumed
+		.map((r) => `Resumed run ${r.run.slice(0, 8)} (${r.workflow}, ${r.node})`)
+		.join('; ');
 }
 
 /** The headline for a decision: "Started fix-issue", "No rule matched", or the failure. */
@@ -89,7 +98,13 @@ export function decisionHeadline(d: EventDecision): {
 } {
 	switch (d.outcome) {
 		case 'started':
-			return { text: `Started ${d.started.join(', ')}`, tone: 'ok' };
+			return {
+				text:
+					`Started ${d.started.join(', ')}` + (d.resumed.length > 0 ? `; ${resumedText(d)}` : ''),
+				tone: 'ok'
+			};
+		case 'resumed':
+			return { text: resumedText(d), tone: 'ok' };
 		case 'error':
 			return { text: 'Could not route this event', tone: 'error' };
 		case 'skipped':

@@ -3,9 +3,10 @@
 //! It serves the API behind the modes and workflow designers (mode documents, workflow
 //! validation and rendering, dry runs against logged events) and, with routing on, owns the
 //! Postgres schema `tracks`: it routes every connector event to the owning Project's workflows
-//! and records a decision per event (`router`). Runs are created `pending`; executing them is a
-//! later rollout step.
+//! and records a decision per event (`router`). Runs are created `pending` and executed by `exec` (agent, command, action,
+//! wait and end nodes).
 
+pub mod actions;
 pub mod api;
 pub mod config;
 pub mod db;

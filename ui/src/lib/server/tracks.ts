@@ -80,6 +80,7 @@ interface WireDecision {
 	matched: string[];
 	reasons: { workflow: string; matched: boolean; on?: string | null; reason: string }[];
 	errors: string[];
+	resumed?: { run: string; workflow: string; node: string }[];
 	decided_at: string;
 }
 
@@ -99,6 +100,7 @@ interface WireRun {
 	created_at: string;
 	updated_at: string;
 	finished_at: string | null;
+	wait_until?: string | null;
 	node_runs?: {
 		node: string;
 		visit: number;
@@ -109,6 +111,8 @@ interface WireRun {
 		usage: NodeRun['usage'];
 		git: NodeRun['git'];
 		error: string | null;
+		intent?: NodeRun['intent'];
+		wait?: NodeRun['wait'];
 		started_at: string | null;
 		finished_at: string | null;
 	}[];
@@ -129,7 +133,8 @@ const toRun = (r: WireRun): RunSummary => ({
 	stopRequested: r.stop_requested,
 	createdAt: r.created_at,
 	updatedAt: r.updated_at,
-	finishedAt: r.finished_at
+	finishedAt: r.finished_at,
+	waitUntil: r.wait_until ?? null
 });
 
 const toDetail = (r: WireRun): RunDetail => ({
@@ -144,6 +149,8 @@ const toDetail = (r: WireRun): RunDetail => ({
 		usage: n.usage,
 		git: n.git,
 		error: n.error,
+		intent: n.intent ?? null,
+		wait: n.wait ?? null,
 		startedAt: n.started_at,
 		finishedAt: n.finished_at
 	}))
@@ -227,6 +234,7 @@ export function createTracksClient(
 					reason: x.reason
 				})),
 				errors: d.errors,
+				resumed: d.resumed ?? [],
 				decidedAt: d.decided_at
 			}));
 		},

@@ -36,6 +36,7 @@ const run: RunDetail = {
 	createdAt: NOW,
 	updatedAt: NOW,
 	finishedAt: null,
+	waitUntil: null,
 	nodeRuns: [
 		{
 			node: 'triage',
@@ -49,8 +50,45 @@ const run: RunDetail = {
 				{ repo: 'e2e-org/app', branch: 'ez/fix-issue/x', head_sha: 'deadbeefcafe', pushed: true }
 			],
 			error: null,
+			intent: null,
+			wait: null,
 			startedAt: NOW,
 			finishedAt: NOW
+		},
+		{
+			node: 'say',
+			visit: 1,
+			status: 'done',
+			rendered: { type: 'action', action: 'open_pull_request', title: 'Fix #7', body: 'Closes #7' },
+			mode: null,
+			outputs: { number: 42, url: 'https://github.com/e2e-org/app/pull/42' },
+			usage: null,
+			git: null,
+			error: null,
+			intent: null,
+			wait: null,
+			startedAt: NOW,
+			finishedAt: NOW
+		},
+		{
+			node: 'wait_reply',
+			visit: 1,
+			status: 'waiting',
+			rendered: { type: 'wait', on: ['issue_comment.created'] },
+			mode: null,
+			outputs: null,
+			usage: null,
+			git: null,
+			error: null,
+			intent: null,
+			wait: {
+				on: ['issue_comment.created'],
+				if: 'event.comment.user.login == subject.author',
+				timeout_secs: 604800,
+				until: '2026-11-06T12:00:00.000Z'
+			},
+			startedAt: NOW,
+			finishedAt: null
 		},
 		{
 			node: 'build',
@@ -62,6 +100,8 @@ const run: RunDetail = {
 			usage: null,
 			git: null,
 			error: null,
+			intent: null,
+			wait: null,
 			startedAt: NOW,
 			finishedAt: null
 		}
@@ -77,7 +117,7 @@ const client: TracksClient = {
 		run.status = 'cancelled';
 		run.reason = 'stopped';
 		run.finishedAt = NOW;
-		run.nodeRuns[1]!.status = 'failed';
+		run.nodeRuns[run.nodeRuns.length - 1]!.status = 'failed';
 		return true;
 	},
 	modesCatalog: async () => ({

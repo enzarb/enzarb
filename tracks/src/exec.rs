@@ -1,6 +1,6 @@
-//! Executes `pending` and `running` runs (ADR-0029 section 5, rollout step 4): `agent`,
-//! `command` and `end` nodes in the Project's sandbox. `action` and `wait` nodes come later; a
-//! run that reaches one ends `failed`.
+//! Executes `pending` and `running` runs (ADR-0029 section 5, rollout steps 4 and 5): `agent`
+//! and `command` nodes in the Project's sandbox, `action` nodes (one GitHub call, see
+//! [`crate::actions`]), `wait` nodes (the run parks) and `end` nodes.
 //!
 //! * **Claiming.** `SELECT ... FOR UPDATE SKIP LOCKED` picks a run whose lease is free or expired
 //!   and takes a lease (`lease_owner`, `lease_until`). The driver renews the lease while it works;
@@ -9,6 +9,12 @@
 //! * **Steps.** The `node_runs` row (with the sandbox `step_run_id`) is written before
 //!   `step_start` is sent. After a restart the driver finds the row and re-attaches with
 //!   `step_status`; it only sends `step_start` again when the sandbox does not know the step.
+//! * **Actions.** The `node_runs` row with the call's `intent` is written before the GitHub call;
+//!   a row found on a resume makes the call a replay that first looks for its own effect.
+//! * **Waits.** Reaching a `wait` parks the run (`status = waiting`, no lease, `wait_node_run_id`,
+//!   `wait_until`). The router (a matching event) or the timeout sweep ([`Executor::wake_waiting`])
+//!   sets `wait_result` and flips the run back to `running`; the driver then feeds the result to
+//!   `advance`. Both flips are `UPDATE ... WHERE status = 'waiting'`, so only one wins.
 //! * **Transitions.** The node's outcome, the `ez-workflow` `advance` and the run row are written
 //!   in one transaction.
 
@@ -26,6 +32,7 @@ use serde_json::{Value, json};
 use sqlx::{PgPool, Row};
 use tokio::sync::{Semaphore, watch};
 
+use crate::actions::{ActionError, Actions, Call, NoActions, marker};
 use crate::github::{MODES_PATH, RepoSource, SourceError, WORKFLOWS_PATH};
 use crate::projects::ProjectLookup;
 use crate::sandbox::{ClaudeTokens, Link, LinkError, Sandboxes};
@@ -84,6 +91,7 @@ pub struct Executor {
     projects: Arc<dyn ProjectLookup>,
     sandboxes: Arc<dyn Sandboxes>,
     tokens: Arc<dyn ClaudeTokens>,
+    actions: Arc<dyn Actions>,
     engine: Engine,
     cfg: ExecConfig,
     me: String,
@@ -107,6 +115,7 @@ struct RunRow {
     stop_requested: bool,
     has_deadline: bool,
     expired: bool,
+    wait_result: Option<Value>,
 }
 
 impl Executor {
@@ -124,10 +133,17 @@ impl Executor {
             projects,
             sandboxes,
             tokens,
+            actions: Arc::new(NoActions),
             engine: Engine::new(),
             cfg,
             me: format!("tracks-{}", std::process::id()) + "-" + &uuid_like(),
         }
+    }
+
+    /// Executes `action` nodes through `actions` (default: they fail, no GitHub App).
+    pub fn with_actions(mut self, actions: Arc<dyn Actions>) -> Self {
+        self.actions = actions;
+        self
     }
 
     /// Claims and drives runs until `stop` flips. Several replicas may run this.
@@ -142,6 +158,9 @@ impl Executor {
                 p = slots.clone().acquire_owned() => p.expect("semaphore"),
                 _ = stop.changed() => continue,
             };
+            if let Err(e) = self.wake_waiting().await {
+                tracing::warn!(error = %e, "waking waiting runs failed");
+            }
             match self.claim().await {
                 Ok(Some(id)) => {
                     let me = self.clone();
@@ -171,6 +190,25 @@ impl Executor {
             slots.acquire_many(self.cfg.concurrency as u32),
         )
         .await;
+    }
+
+    /// Wakes parked runs whose wait timed out (outputs `timed_out = true`), and ones that were
+    /// stopped or passed their run deadline (the driver then ends them). Returns how many.
+    pub async fn wake_waiting(&self) -> Result<u64, sqlx::Error> {
+        let r = sqlx::query(
+            "UPDATE tracks.runs SET status = 'running', updated_at = now(), wait_until = NULL,
+                    wait_result = CASE
+                        WHEN stop_requested OR (deadline IS NOT NULL AND deadline < now()) THEN NULL
+                        ELSE jsonb_build_object(
+                            'outputs', jsonb_build_object('event', 'null'::jsonb, 'timed_out', true),
+                            'event_id', 'null'::jsonb) END
+              WHERE status = 'waiting' AND finished_at IS NULL
+                AND (stop_requested OR (wait_until IS NOT NULL AND wait_until < now())
+                     OR (deadline IS NOT NULL AND deadline < now()))",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(r.rows_affected())
     }
 
     /// Takes the lease of the oldest claimable run.
@@ -334,16 +372,23 @@ impl Executor {
                         StepOutcome::Ended => return Ok(()),
                     }
                 }
-                Rendered::Action { .. } | Rendered::Wait { .. } => {
-                    tracing::info!(run = id, node, "node type not supported yet");
-                    return self
-                        .end_run(
-                            &run,
-                            Some(state),
-                            EndStatus::Failed,
-                            "node type not supported yet".into(),
-                        )
-                        .await;
+                Rendered::Action { .. } => {
+                    match self
+                        .action_step(&run, &mut state, &node, &rendered, pin)
+                        .await?
+                    {
+                        StepOutcome::Advanced => {}
+                        StepOutcome::Ended => return Ok(()),
+                    }
+                }
+                Rendered::Wait { .. } => {
+                    match self
+                        .wait_step(&run, &mut state, &node, &rendered, pin)
+                        .await?
+                    {
+                        StepOutcome::Advanced => {}
+                        StepOutcome::Ended => return Ok(()),
+                    }
                 }
                 Rendered::End { status } => {
                     return self.end_run(&run, Some(state), status, String::new()).await;
@@ -355,7 +400,7 @@ impl Executor {
     async fn load(&self, id: &str) -> Result<RunRow, Stop> {
         let r = sqlx::query(
             "SELECT id::text AS id, workflow, project, repo, sha, status, state, stop_requested,
-                    deadline IS NOT NULL AS has_deadline, (deadline IS NOT NULL AND deadline < now()) AS expired
+                    deadline IS NOT NULL AS has_deadline, (deadline IS NOT NULL AND deadline < now()) AS expired, wait_result
                FROM tracks.runs WHERE id = $1::uuid",
         )
         .bind(id)
@@ -372,6 +417,7 @@ impl Executor {
             stop_requested: r.get("stop_requested"),
             has_deadline: r.get("has_deadline"),
             expired: r.get("expired"),
+            wait_result: r.get("wait_result"),
         })
     }
 
@@ -500,6 +546,295 @@ impl Executor {
             }
             RunStatus::At { .. } => Ok(()),
         }
+    }
+
+    // ----- actions and waits -----
+
+    /// Runs an `action` node: intent first, then the GitHub call (a replay looks for its effect
+    /// first), then the outputs and the transition in one transaction.
+    async fn action_step(
+        &self,
+        run: &RunRow,
+        state: &mut RunState,
+        node: &str,
+        rendered: &Rendered,
+        pin: &Pinned,
+    ) -> Result<StepOutcome, Stop> {
+        let Rendered::Action {
+            action,
+            title,
+            body,
+            labels,
+            draft,
+        } = rendered
+        else {
+            return Err(Stop::Retry("not an action".into()));
+        };
+        let visit = *state.visits.get(node).unwrap_or(&1) as i32;
+        let mark = marker(&run.id, node, visit);
+        let test = state.run.test;
+        let branch = if test {
+            format!("ez-test/{}", run.id)
+        } else {
+            format!("ez/{}/{}", run.workflow, run.id)
+        };
+        let base = match self.projects.owner(&run.repo).await {
+            Ok(Some(p)) => p.default_branch,
+            Ok(None) => {
+                let m = format!("no Project owns {}", run.repo);
+                return self.fail_action(run, state, node, visit, rendered, m).await;
+            }
+            Err(e) => return Err(Stop::Retry(e)),
+        };
+        let intent = json!({
+            "action": action.as_str(), "repo": run.repo, "branch": branch, "base": base,
+            "subject": state.subject, "marker": mark, "title": title, "body": body,
+            "labels": labels, "draft": draft, "test": test,
+        });
+        // The intent is durable before the call: a row found later means the call may have run.
+        let inserted: Option<i64> = sqlx::query_scalar(
+            "INSERT INTO tracks.node_runs (run_id, node, visit, status, inputs, rendered, intent, started_at)
+             VALUES ($1::uuid, $2, $3, 'running', $4, $4, $5, now())
+             ON CONFLICT (run_id, node, visit) DO NOTHING RETURNING id",
+        )
+        .bind(&run.id)
+        .bind(node)
+        .bind(visit)
+        .bind(serde_json::to_value(rendered).unwrap_or(Value::Null))
+        .bind(&intent)
+        .fetch_optional(&self.pool)
+        .await?;
+        let replay = inserted.is_none();
+        let node_run_id: i64 = match inserted {
+            Some(id) => id,
+            None => {
+                sqlx::query_scalar(
+                    "SELECT id FROM tracks.node_runs WHERE run_id = $1::uuid AND node = $2 AND visit = $3",
+                )
+                .bind(&run.id)
+                .bind(node)
+                .bind(visit)
+                .fetch_one(&self.pool)
+                .await?
+            }
+        };
+
+        let outputs = if test {
+            // Test runs change nothing outside the sandbox: record the call (ADR-0029 section 6).
+            json!({
+                "number": 9_000_000 + visit as u64,
+                "url": format!("https://github.com/{}/test-run/{}/{node}", run.repo, run.id),
+                "test": true,
+                "call": intent,
+            })
+        } else {
+            let call = Call {
+                repo: &run.repo,
+                base: &base,
+                branch: &branch,
+                subject: state.subject.as_ref(),
+                action: *action,
+                title: title.as_deref(),
+                body: body.as_deref(),
+                labels,
+                draft: *draft,
+                marker: &mark,
+                replay,
+            };
+            match self.actions.perform(&call).await {
+                Ok(o) => o,
+                Err(ActionError::Transient(m)) => return Err(Stop::Retry(m)),
+                Err(ActionError::Permanent(m)) => {
+                    return self.fail_action(run, state, node, visit, rendered, m).await;
+                }
+            }
+        };
+
+        let mut next = state.clone();
+        if let Err(e) = next.advance(&self.engine, &pin.file, outputs.clone()) {
+            return self
+                .fail_action(run, state, node, visit, rendered, e.to_string())
+                .await;
+        }
+        tracing::info!(run = %run.id, node, action = action.as_str(), replay, "action done");
+        self.finish_local(run, node_run_id, "done", &outputs, None, None, Some(&next))
+            .await?;
+        *state = next;
+        Ok(if state.is_ended() {
+            StepOutcome::Ended
+        } else {
+            StepOutcome::Advanced
+        })
+    }
+
+    async fn fail_action(
+        &self,
+        run: &RunRow,
+        state: &RunState,
+        node: &str,
+        visit: i32,
+        rendered: &Rendered,
+        msg: String,
+    ) -> Result<StepOutcome, Stop> {
+        self.record_failed_node(run, node, visit, rendered, &msg)
+            .await?;
+        self.end_run(run, Some(state.clone()), EndStatus::Failed, msg)
+            .await?;
+        Ok(StepOutcome::Ended)
+    }
+
+    /// A `wait` node. Without a `wait_result` the run parks; with one (set by the router or the
+    /// timeout sweep) the node finishes and the run advances.
+    async fn wait_step(
+        &self,
+        run: &RunRow,
+        state: &mut RunState,
+        node: &str,
+        rendered: &Rendered,
+        pin: &Pinned,
+    ) -> Result<StepOutcome, Stop> {
+        let Rendered::Wait {
+            on,
+            condition,
+            timeout_secs,
+        } = rendered
+        else {
+            return Err(Stop::Retry("not a wait".into()));
+        };
+        let visit = *state.visits.get(node).unwrap_or(&1) as i32;
+        let existing: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM tracks.node_runs WHERE run_id = $1::uuid AND node = $2 AND visit = $3",
+        )
+        .bind(&run.id)
+        .bind(node)
+        .bind(visit)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let (Some(res), Some(nid)) = (&run.wait_result, existing) {
+            let outputs = res.get("outputs").cloned().unwrap_or(Value::Null);
+            let timed_out = outputs.get("timed_out").and_then(Value::as_bool) == Some(true);
+            let wait = json!({ "resumed_by_event": res.get("event_id"), "timed_out": timed_out });
+            let mut next = state.clone();
+            if let Err(e) = next.advance(&self.engine, &pin.file, outputs.clone()) {
+                let why = e.to_string();
+                self.finish_local(run, nid, "failed", &outputs, Some(&why), Some(&wait), None)
+                    .await?;
+                self.end_run(run, Some(state.clone()), EndStatus::Failed, why)
+                    .await?;
+                return Ok(StepOutcome::Ended);
+            }
+            tracing::info!(run = %run.id, node, timed_out, "wait finished");
+            self.finish_local(run, nid, "done", &outputs, None, Some(&wait), Some(&next))
+                .await?;
+            *state = next;
+            return Ok(if state.is_ended() {
+                StepOutcome::Ended
+            } else {
+                StepOutcome::Advanced
+            });
+        }
+
+        // Park: the node row, the wait's deadline and the status in one transaction.
+        let mut tx = self.pool.begin().await?;
+        let nid: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks.node_runs (run_id, node, visit, status, inputs, rendered, started_at)
+             VALUES ($1::uuid, $2, $3, 'waiting', $4, $4, now())
+             ON CONFLICT (run_id, node, visit) DO UPDATE SET status = 'waiting'
+             RETURNING id",
+        )
+        .bind(&run.id)
+        .bind(node)
+        .bind(visit)
+        .bind(serde_json::to_value(rendered).unwrap_or(Value::Null))
+        .fetch_one(&mut *tx)
+        .await?;
+        let parked: Option<Option<String>> = sqlx::query_scalar(
+            "UPDATE tracks.runs SET status = 'waiting', current_node = $3, wait_node_run_id = $4,
+                    wait_result = NULL, updated_at = now(), lease_owner = NULL, lease_until = NULL,
+                    wait_until = CASE WHEN $5::float8 IS NULL THEN NULL
+                                      ELSE now() + make_interval(secs => $5::float8) END
+              WHERE id = $1::uuid AND lease_owner = $2 AND finished_at IS NULL
+          RETURNING to_char(wait_until AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')",
+        )
+        .bind(&run.id)
+        .bind(&self.me)
+        .bind(node)
+        .bind(nid)
+        .bind(timeout_secs.map(|s| s as f64))
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(until) = parked else {
+            tx.rollback().await?;
+            return Err(Stop::LostLease);
+        };
+        sqlx::query("UPDATE tracks.node_runs SET wait = $2 WHERE id = $1")
+            .bind(nid)
+            .bind(
+                json!({ "on": on, "if": condition, "timeout_secs": timeout_secs, "until": until }),
+            )
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        tracing::info!(run = %run.id, node, "run waits");
+        Ok(StepOutcome::Ended)
+    }
+
+    /// Finishes a node that ran in tracks and, with `next`, writes the advanced run state, in
+    /// one transaction. Also clears any wait bookkeeping of the run.
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_local(
+        &self,
+        run: &RunRow,
+        node_run_id: i64,
+        status: &str,
+        outputs: &Value,
+        error: Option<&str>,
+        wait: Option<&Value>,
+        next: Option<&RunState>,
+    ) -> Result<(), Stop> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "UPDATE tracks.node_runs SET status = $2, outputs = $3, error = $4,
+                    wait = CASE WHEN $5::jsonb IS NULL THEN wait ELSE COALESCE(wait, '{}'::jsonb) || $5::jsonb END,
+                    finished_at = now()
+              WHERE id = $1",
+        )
+        .bind(node_run_id)
+        .bind(status)
+        .bind(outputs)
+        .bind(error)
+        .bind(wait)
+        .execute(&mut *tx)
+        .await?;
+        if let Some(next) = next {
+            let (st, finished, reason) = match &next.status {
+                RunStatus::At { .. } => ("running", false, None),
+                RunStatus::Ended { status, reason, .. } => (status.as_str(), true, reason.clone()),
+            };
+            let r = sqlx::query(
+                "UPDATE tracks.runs SET state = $3, visits = $4, current_node = $5, status = $6, reason = $7,
+                        wait_node_run_id = NULL, wait_result = NULL, wait_until = NULL,
+                        updated_at = now(), finished_at = CASE WHEN $8 THEN now() END,
+                        lease_until = CASE WHEN $8 THEN NULL ELSE lease_until END
+                  WHERE id = $1::uuid AND lease_owner = $2 AND finished_at IS NULL",
+            )
+            .bind(&run.id)
+            .bind(&self.me)
+            .bind(serde_json::to_value(next).unwrap_or(Value::Null))
+            .bind(serde_json::to_value(&next.visits).unwrap_or(json!({})))
+            .bind(next.current())
+            .bind(st)
+            .bind(&reason)
+            .bind(finished)
+            .execute(&mut *tx)
+            .await?;
+            if r.rows_affected() == 0 {
+                tx.rollback().await?;
+                return Err(Stop::LostLease);
+            }
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     // ----- steps -----

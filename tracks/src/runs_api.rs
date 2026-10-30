@@ -24,6 +24,7 @@ fn run_select() -> String {
     format!(
         "SELECT id::text AS id, workflow, project, repo, subject, event_id, sha, status, test,
                 current_node, reason, stop_requested, visits,
+                to_char(wait_until AT TIME ZONE 'UTC', {TS}) AS wait_until,
                 to_char(created_at AT TIME ZONE 'UTC', {TS}) AS created_at,
                 to_char(updated_at AT TIME ZONE 'UTC', {TS}) AS updated_at,
                 to_char(finished_at AT TIME ZONE 'UTC', {TS}) AS finished_at
@@ -46,6 +47,7 @@ fn run_json(r: &sqlx::postgres::PgRow) -> Value {
         "reason": r.get::<Option<String>, _>("reason"),
         "stop_requested": r.get::<bool, _>("stop_requested"),
         "visits": r.get::<Value, _>("visits"),
+        "wait_until": r.get::<Option<String>, _>("wait_until"),
         "created_at": r.get::<String, _>("created_at"),
         "updated_at": r.get::<String, _>("updated_at"),
         "finished_at": r.get::<Option<String>, _>("finished_at"),
@@ -118,7 +120,7 @@ pub async fn get(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult
         .map_err(db_error)?
         .ok_or_else(not_found)?;
     let nodes = sqlx::query(&format!(
-        "SELECT node, visit, status, rendered, mode, outputs, usage, git, error,
+        "SELECT node, visit, status, rendered, mode, outputs, usage, git, error, intent, wait,
                 to_char(started_at AT TIME ZONE 'UTC', {TS}) AS started_at,
                 to_char(finished_at AT TIME ZONE 'UTC', {TS}) AS finished_at
            FROM tracks.node_runs WHERE run_id = $1::uuid ORDER BY id"
@@ -140,6 +142,8 @@ pub async fn get(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult
                 "usage": n.get::<Option<Value>, _>("usage"),
                 "git": n.get::<Option<Value>, _>("git"),
                 "error": n.get::<Option<String>, _>("error"),
+                "intent": n.get::<Option<Value>, _>("intent"),
+                "wait": n.get::<Option<Value>, _>("wait"),
                 "started_at": n.get::<Option<String>, _>("started_at"),
                 "finished_at": n.get::<Option<String>, _>("finished_at"),
             })
