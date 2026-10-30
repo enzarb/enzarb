@@ -127,7 +127,9 @@
 		const names = chosen.map((t) => t.title).join(', ');
 		try {
 			const cur = await templates.load();
-			const merged = mergeTemplates(initial.file, cur.doc, chosen);
+			// The live document, so unsaved rule edits are committed with the templates.
+			const live = toWire($state.snapshot(doc) as WorkflowsDoc);
+			const merged = mergeTemplates(live, cur.doc, chosen);
 			const m = await templates.renderModes(merged.modes, cur.text);
 			if (!m.ok) return set('modes-check', 'failed', m.message);
 			set('modes-check', 'done');
