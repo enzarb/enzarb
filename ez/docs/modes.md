@@ -94,7 +94,7 @@ What `tools` does and doesn't control:
 
 ## The system prompt
 
-ez builds the system prompt fresh for every model request (under the claude-code driver, once per session; see [below](#under-the-claude-code-driver)), in this order:
+ez builds the system prompt fresh for every model request (under the claude-code driver, once per session and again after each mode switch; see [below](#under-the-claude-code-driver)), in this order:
 
 1. ez's base instructions (be concise, prefer dedicated tools over shell, prefer mise tasks, plan with TodoWrite, ask with AskUserQuestion, propose phase changes with SwitchMode, never commit or push unless asked).
 2. `## Environment`: working directory, platform, date, git branch.
@@ -311,7 +311,7 @@ With a `provider = "claude-code"` profile, Claude Code runs the model loop but e
 - Every call runs inside ez: the same permissions, hooks, transcript and edit tracking.
 - Claude Code's own configuration is not loaded: no `CLAUDE.md` through Claude Code (ez adds it to the prompt itself), no Claude Code settings or hooks, and no `.mcp.json` through Claude Code (ez connects to those servers and re-serves the selected tools).
 
-Limits today: the system prompt is fixed when the session's first prompt starts Claude Code, so a later mode switch changes the tools but not the prompt; Claude Code compacts its own context, so `compaction_threshold` doesn't apply.
+Limits today: Claude Code fixes the system prompt when its session starts, so after a mode switch the next prompt restarts Claude Code with the new mode's prompt (a notice is shown) and Claude Code's own conversation context starts empty; Claude Code compacts its own context, so `compaction_threshold` doesn't apply.
 
 ## In enzarb sandboxes
 

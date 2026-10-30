@@ -7,6 +7,7 @@ agent text: `prompt=ok tools=Read,Write Write=ok Bash=error prompts=N`.
 """
 import json
 import os
+import re
 import sys
 import urllib.request
 
@@ -68,6 +69,8 @@ def check_session_new(p):
     state["url"] = servers[0]["url"]
     state["auth"] = headers.get("Authorization", "")
     state["prompt_ok"] = "MODE-BUILD-PROMPT" in text
+    m = re.search(r"MODE-[A-Z]+-PROMPT", text)
+    state["sys"] = m.group(0) if m else "none"
     state["cwd"] = p["cwd"]
     return None
 
@@ -78,7 +81,7 @@ def on_prompt(p):
                        "clientInfo": {"name": "fake-claude", "version": "0"}})
     tools = [t["name"] for t in mcp("tools/list", {}, 2)["tools"]]
     parts = ["prompt=" + ("ok" if state.get("prompt_ok") else "missing"),
-             "tools=" + ",".join(tools)]
+             "tools=" + ",".join(tools), "sys=" + state.get("sys", "none")]
     if state["prompts"] == 1:
         calls = [("Write", {"file_path": "out.txt", "content": "hello from claude"}),
                  ("Bash", {"command": "echo nope"})]

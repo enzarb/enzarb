@@ -191,6 +191,8 @@ struct SessionState {
     warned_profiles: bool,
     /// claude-code driver, started on the first prompt of a `claude-code` profile.
     claude: Option<ez_claude::ClaudeDriver>,
+    /// The mode whose prompt the running `claude` child was started with.
+    claude_mode: String,
 }
 
 impl SessionState {
@@ -405,6 +407,7 @@ impl Agent {
             model_pin: None,
             warned_profiles: false,
             claude: None,
+            claude_mode: String::new(),
         })
     }
 
@@ -1084,7 +1087,20 @@ impl Agent {
         profile: &Profile,
     ) -> Result<StopReason> {
         s.push(Message::user_text(text.clone()), UserSource::User);
+        self.apply_pending_mode(s, client).await;
         let specs: Vec<ez_llm::ToolSpec> = build_tools(s).iter().map(|t| t.spec()).collect();
+        // Claude Code fixes the system prompt at `session/new`, so a mode switch restarts the
+        // child with the new mode's prompt (its own conversation context starts empty).
+        if s.claude.is_some() && s.claude_mode != s.mode {
+            s.claude = None;
+            client.send_event(
+                &s.id,
+                SessionEvent::Notice(format!(
+                    "mode changed to `{}`: restarting Claude Code with the new system prompt",
+                    s.mode
+                )),
+            );
+        }
         let mut driver = match s.claude.take() {
             Some(d) => {
                 d.set_tools(specs);
@@ -1092,6 +1108,7 @@ impl Agent {
             }
             None => {
                 let system = system_prompt(&s.cwd, &s.modes, &s.mode).await;
+                s.claude_mode = s.mode.clone();
                 let started = ez_claude::ClaudeDriver::start(ez_claude::DriverConfig {
                     cwd: s.cwd.clone(),
                     system_prompt: system,

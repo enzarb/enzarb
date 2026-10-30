@@ -46,6 +46,11 @@ default_mode = "build"
 description = "build things"
 prompt = "MODE-BUILD-PROMPT"
 tools = ["Read", "Write"]
+
+[modes.review]
+description = "review things"
+prompt = "MODE-REVIEW-PROMPT"
+tools = ["Read", "Write"]
 "#;
 
 fn use_fixture() {
@@ -176,4 +181,29 @@ async fn reports_a_child_that_rejects_the_session() {
     let msg = format!("{err:#}");
     assert!(msg.contains("session/new"), "{msg}");
     assert!(msg.contains("refusing session"), "{msg}");
+}
+
+#[tokio::test]
+async fn mode_switch_restarts_child_with_new_mode_prompt() {
+    let (proj, _user, agent) = setup();
+    let info = agent
+        .new_session(proj.path().to_path_buf(), None)
+        .await
+        .unwrap();
+    let client = std::sync::Arc::new(TestClient::default());
+    agent
+        .prompt(&info.id, "one".into(), client.clone())
+        .await
+        .unwrap();
+    agent
+        .set_mode(&info.id, "review", client.clone())
+        .await
+        .unwrap();
+    client.events.lock().unwrap().clear();
+    agent
+        .prompt(&info.id, "two".into(), client.clone())
+        .await
+        .unwrap();
+    let text = agent_text(&client.events.lock().unwrap());
+    assert!(text.contains("sys=MODE-REVIEW-PROMPT"), "{text}");
 }
