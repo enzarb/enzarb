@@ -83,6 +83,20 @@ describe('RulesView', () => {
 		await expect.poll(() => saved.mock.calls.length).toBe(1);
 	});
 
+	it('keeps several trigger events, one per line', async () => {
+		const a = api();
+		render(RulesView, { file, api: a, dryRun: dry(), saved: vi.fn(), advanced: vi.fn() });
+		await page
+			.getByRole('textbox', { name: 'Events for fix-issue (one per line)' })
+			.fill('issues.labeled\npull_request.opened');
+		await page.getByRole('button', { name: 'Commit to main' }).click();
+		await expect.poll(() => vi.mocked(a.save).mock.calls.length).toBe(1);
+		expect(vi.mocked(a.save).mock.calls[0][0].file?.workflows?.['fix-issue'].on).toEqual([
+			'issues.labeled',
+			'pull_request.opened'
+		]);
+	});
+
 	it('opens the designer for a workflow', async () => {
 		const advanced = vi.fn();
 		render(RulesView, { file, api: api(), dryRun: dry(), saved: vi.fn(), advanced });
