@@ -211,11 +211,9 @@ pub async fn route(
     let Some(repo) = &row.repo else {
         return Ok((Decision::new(row, Outcome::Skipped), None));
     };
+    // The App is installed org-wide, so most repositories belong to no Project: not an error.
     let Some(project) = projects.owner(repo).await? else {
-        return Ok((
-            Decision::error(row, None, format!("no Project owns {repo}")),
-            None,
-        ));
+        return Ok((Decision::new(row, Outcome::Skipped), None));
     };
     match source.snapshot(repo, &project.default_branch).await {
         Ok(snap) => Ok(evaluate(engine, row, &project, &snap)),
@@ -904,8 +902,8 @@ status = "done"
         let e = Engine::new();
         let ok = Src(Ok(snap(Some(WORKFLOWS), None)));
         let (d, _) = route(&e, &Projects(None), &ok, &row("ez")).await.unwrap();
-        assert_eq!(d.outcome, Outcome::Error);
-        assert!(d.errors[0].contains("no Project owns o/r"));
+        assert_eq!(d.outcome, Outcome::Skipped);
+        assert!(d.errors.is_empty());
 
         let mut no_repo = row("ez");
         no_repo.repo = None;
