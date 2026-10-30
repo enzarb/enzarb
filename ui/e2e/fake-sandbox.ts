@@ -75,7 +75,13 @@ function serve(
 					return;
 				}
 				welcomed = true;
-				send(ctrlFrame({ type: 'welcome', version, features: [Feature.Acp, Feature.FileRead] }));
+				send(
+					ctrlFrame({
+						type: 'welcome',
+						version,
+						features: [Feature.Acp, Feature.FileRead, Feature.FileReadChat]
+					})
+				);
 				return;
 			}
 			case 'open':

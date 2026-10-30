@@ -17,7 +17,7 @@
 	import type { TemplatesApi } from './RulesView.svelte';
 	import type { WorkflowsApi } from './WorkflowsDesigner.svelte';
 	import {
-		ezEditBase,
+		FILE_READ_CHAT_FEATURE,
 		FILE_READ_FEATURE,
 		REVERT_MESSAGE,
 		rulesContextMessage
@@ -74,7 +74,11 @@
 
 	async function readFile(path: string) {
 		const s = session;
-		if (!s?.readFile || !s.features.has(FILE_READ_FEATURE)) {
+		if (
+			!s?.readFile ||
+			!s.features.has(FILE_READ_FEATURE) ||
+			!s.features.has(FILE_READ_CHAT_FEATURE)
+		) {
 			throw new Error('This sandbox cannot show proposals yet: it needs an update.');
 		}
 		let timer: ReturnType<typeof setTimeout> | undefined;
@@ -88,34 +92,65 @@
 		}
 	}
 
-	async function refresh(base: string) {
-		const mine = ++seq;
+	// Content of the two files at the last read; an unchanged read is not validated again.
+	let lastKey: string | null = null;
+	let running = false;
+	let again = false;
+
+	/** Re-read both files; propose only when their content changed since the last read. */
+	async function refresh() {
+		if (running) {
+			again = true;
+			return;
+		}
+		running = true;
 		try {
-			const cur = await templates.load();
-			const r = await buildProposal(
-				base,
-				{ readFile, ...check },
-				{ file: file.file, modes: cur.doc, modesToml: cur.text }
-			);
-			if (mine !== seq) return;
-			problem = r.ok ? '' : r.message;
-			if (r.ok) {
-				proposal = r.proposal;
-				steps = [];
-			}
-		} catch (e) {
-			if (mine === seq) problem = e instanceof Error ? e.message : 'Could not read the change.';
+			do {
+				again = false;
+				const mine = ++seq;
+				try {
+					const cur = await templates.load();
+					const r = await buildProposal(
+						{ readFile, ...check },
+						{ file: file.file, modes: cur.doc, modesToml: cur.text },
+						lastKey
+					);
+					if (mine !== seq) continue;
+					problem = r.ok ? '' : r.message;
+					if (r.ok && !r.same) {
+						lastKey = r.key;
+						proposal = r.proposal;
+						steps = [];
+					} else if (!r.ok) {
+						lastKey = null;
+					}
+				} catch (e) {
+					lastKey = null;
+					if (mine === seq) problem = e instanceof Error ? e.message : 'Could not read the change.';
+				}
+			} while (again);
+		} finally {
+			running = false;
 		}
 	}
 
+	// Every finished tool call may have edited the files (a shell command, a tool that names no
+	// path), and so may the turn as a whole: re-read after each.
 	function onItems(items: ChatItem[]) {
+		let done = false;
 		for (const it of items) {
-			if (it.kind !== 'tool' || seen.has(it.toolCallId)) continue;
-			const base = ezEditBase(it);
-			if (base === null) continue;
+			if (it.kind !== 'tool' || it.status !== 'completed' || seen.has(it.toolCallId)) continue;
 			seen.add(it.toolCallId);
-			void refresh(base);
+			if (it.toolKind === 'read' || it.toolKind === 'search' || it.toolKind === 'fetch') continue;
+			done = true;
 		}
+		if (done) void refresh();
+	}
+
+	let wasBusy = false;
+	function onBusy(busy: boolean) {
+		if (wasBusy && !busy) void refresh();
+		wasBusy = busy;
 	}
 
 	async function accept() {
@@ -163,6 +198,7 @@
 				result = { unchanged: r.unchanged, commitUrl: r.commitUrl };
 			}
 			proposal = null;
+			lastKey = null;
 			saved(result);
 		} catch {
 			steps = steps.map((s) =>
@@ -194,6 +230,7 @@
 			{connect}
 			{wrapFirst}
 			{onItems}
+			{onBusy}
 			onSession={(s) => (session = s)}
 		/>
 	{/key}

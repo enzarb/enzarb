@@ -43,11 +43,11 @@ function deps(files: Record<string, string>, over: Partial<ProposalDeps> = {}): 
 }
 
 describe('buildProposal', () => {
-	it('reads both files under the base and diffs them', async () => {
-		const d = deps({ '/w/.ez/workflows.toml': 'w', '/w/.ez/modes.toml': 'm' });
-		const r = await buildProposal('/w/', d, base);
-		expect(d.readFile).toHaveBeenCalledWith('/w/.ez/workflows.toml');
-		expect(d.readFile).toHaveBeenCalledWith('/w/.ez/modes.toml');
+	it('reads both files by relative path and diffs them', async () => {
+		const d = deps({ '.ez/workflows.toml': 'w', '.ez/modes.toml': 'm' });
+		const r = await buildProposal(d, base);
+		expect(d.readFile).toHaveBeenCalledWith('.ez/workflows.toml');
+		expect(d.readFile).toHaveBeenCalledWith('.ez/modes.toml');
 		expect(r.ok && r.proposal?.diff.addedRules).toEqual(['extra']);
 		expect(r.ok && r.proposal?.diff.addedModes).toEqual(['a']);
 		expect(r.ok && r.proposal?.rulesChanged).toBe(true);
@@ -60,7 +60,16 @@ describe('buildProposal', () => {
 			{ '.ez/workflows.toml': 'w' },
 			{ checkRules: vi.fn(async () => ({ ok: true as const, diagnostics: [], file: saved })) }
 		);
-		expect(await buildProposal('', d, base)).toEqual({ ok: true, proposal: null });
+		expect(await buildProposal(d, base)).toMatchObject({ ok: true, proposal: null });
+	});
+
+	it('skips validation when the content equals the previous read', async () => {
+		const d = deps({ '.ez/workflows.toml': 'w', '.ez/modes.toml': 'm' });
+		const first = await buildProposal(d, base);
+		if (!first.ok) throw new Error('first read failed');
+		const again = await buildProposal(d, base, first.key);
+		expect(again).toMatchObject({ ok: true, proposal: null, same: true });
+		expect(d.checkRules).toHaveBeenCalledTimes(1);
 	});
 
 	it('reports validation errors instead of a proposal', async () => {
@@ -74,7 +83,7 @@ describe('buildProposal', () => {
 				}))
 			}
 		);
-		expect(await buildProposal('', d, base)).toEqual({
+		expect(await buildProposal(d, base)).toEqual({
 			ok: false,
 			message: '.ez/workflows.toml has an error: unknown mode'
 		});
@@ -92,6 +101,6 @@ describe('buildProposal', () => {
 				}))
 			}
 		);
-		expect((await buildProposal('/etc/', d, base)).ok).toBe(false);
+		expect((await buildProposal(d, base)).ok).toBe(false);
 	});
 });

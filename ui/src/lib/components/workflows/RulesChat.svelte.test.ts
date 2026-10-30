@@ -23,7 +23,6 @@ const file: WorkflowsFile = {
 	modesToml: '[modes.triage]\n',
 	modeIds: ['triage']
 };
-const WT = '/workspace/worktrees/chat-1/';
 const mode = {
 	id: 'triage',
 	description: '',
@@ -38,27 +37,29 @@ const mode = {
 };
 const doc = { defaultMode: 'triage', modes: [mode] };
 
-function setup(files: Record<string, string>) {
+function setup(files: Record<string, string>, edit = true) {
 	const ch = fakeAgentChannel({
 		sessionId: 's-1',
 		onMessage(m: Msg, c) {
 			if (m.method === 'session/prompt') {
-				// The agent edits the rules file, then ends the turn.
-				for (const update of [
-					{
-						sessionUpdate: 'tool_call',
-						toolCallId: 'e1',
-						title: 'Edit',
-						kind: 'edit',
-						status: 'pending'
-					},
-					{
-						sessionUpdate: 'tool_call_update',
-						toolCallId: 'e1',
-						status: 'completed',
-						content: [{ type: 'diff', path: `${WT}.ez/workflows.toml`, newText: 'x' }]
-					}
-				]) {
+				// The agent edits the rules by a shell command that names no .ez path, then ends the turn.
+				for (const update of edit
+					? [
+							{
+								sessionUpdate: 'tool_call',
+								toolCallId: 'e1',
+								title: 'sed -i s/a/b/ config',
+								kind: 'execute',
+								status: 'pending'
+							},
+							{
+								sessionUpdate: 'tool_call_update',
+								toolCallId: 'e1',
+								status: 'completed',
+								content: [{ type: 'content', content: { type: 'text', text: 'done' } }]
+							}
+						]
+					: []) {
 					c.send({
 						jsonrpc: '2.0',
 						method: 'session/update',
@@ -76,7 +77,7 @@ function setup(files: Record<string, string>) {
 			: { ok: false as const, path, code: 'not_found', message: 'missing' }
 	);
 	const s: AcpSession = {
-		features: new Set(['acp', 'file_read']),
+		features: new Set(['acp', 'file_read', 'file_read_chat']),
 		openAcp: vi.fn(async () => ch as unknown as AcpChannel),
 		readFile
 	};
@@ -103,12 +104,18 @@ function setup(files: Record<string, string>) {
 		workflows: { ...wire.workflows, review: { ...wire.workflows!['fix-issue'], on: ['push'] } }
 	};
 	const check = {
-		parseModes: vi.fn(async () => ({
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		parseModes: vi.fn<() => Promise<any>>(async () => ({
 			ok: true as const,
 			doc: { ...doc, modes: [mode, { ...mode, id: 'reviewer' }] },
 			issues: []
 		})),
-		checkRules: vi.fn(async () => ({ ok: true as const, diagnostics: [], file: added }))
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		checkRules: vi.fn<() => Promise<any>>(async () => ({
+			ok: true as const,
+			diagnostics: [],
+			file: added
+		}))
 	};
 	const saved = vi.fn();
 	const props = {
@@ -128,8 +135,8 @@ describe('RulesChat', () => {
 	it('sends the context first, shows a proposal for an edit, and accepts modes first', async () => {
 		sessionStorage.clear();
 		const t = setup({
-			[`${WT}.ez/workflows.toml`]: 'version = 1\n# new',
-			[`${WT}.ez/modes.toml`]: '[modes.reviewer]\n'
+			['.ez/workflows.toml']: 'version = 1\n# new',
+			['.ez/modes.toml']: '[modes.reviewer]\n'
 		});
 		render(RulesChat, t.props);
 		const box = page.getByRole('textbox', { name: 'Message' });
@@ -150,9 +157,50 @@ describe('RulesChat', () => {
 		await expect.element(page.getByText(/Added the rule "review"/)).not.toBeInTheDocument();
 	});
 
+	it('proposes nothing when the files did not change', async () => {
+		sessionStorage.clear();
+		const t = setup({
+			'.ez/workflows.toml': 'version = 1\n',
+			'.ez/modes.toml': '[modes.triage]\n'
+		});
+		t.props.check.checkRules.mockImplementation(async () => ({
+			ok: true as const,
+			diagnostics: [],
+			file: wire
+		}));
+		t.props.check.parseModes.mockImplementation(async () => ({
+			ok: true as const,
+			doc,
+			issues: []
+		}));
+		render(RulesChat, t.props);
+		const box = page.getByRole('textbox', { name: 'Message' });
+		await expect.element(box).toBeEnabled();
+		await box.fill('go');
+		await page.getByRole('button', { name: 'Send' }).click();
+		await vi.waitFor(() => expect(t.readFile).toHaveBeenCalled());
+		await vi.waitFor(() => expect(t.props.check.checkRules).toHaveBeenCalledTimes(1));
+		await expect
+			.element(page.getByRole('button', { name: 'Accept and commit' }))
+			.not.toBeInTheDocument();
+		// Re-reads after the tool call and the end of the turn validate the same content once.
+		expect(t.props.check.checkRules).toHaveBeenCalledTimes(1);
+	});
+
+	it('re-reads at the end of a turn even when no tool call ran', async () => {
+		sessionStorage.clear();
+		const t = setup({ '.ez/workflows.toml': 'x', '.ez/modes.toml': 'y' }, false);
+		render(RulesChat, t.props);
+		const box = page.getByRole('textbox', { name: 'Message' });
+		await expect.element(box).toBeEnabled();
+		await box.fill('go');
+		await page.getByRole('button', { name: 'Send' }).click();
+		await expect.element(page.getByText(/Added the rule "review"/)).toBeVisible();
+	});
+
 	it('discard dismisses the card and asks the agent to revert', async () => {
 		sessionStorage.clear();
-		const t = setup({ [`${WT}.ez/workflows.toml`]: 'x', [`${WT}.ez/modes.toml`]: 'y' });
+		const t = setup({ ['.ez/workflows.toml']: 'x', ['.ez/modes.toml']: 'y' });
 		render(RulesChat, t.props);
 		const box = page.getByRole('textbox', { name: 'Message' });
 		await expect.element(box).toBeEnabled();

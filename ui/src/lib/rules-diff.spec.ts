@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { ChatItem } from '#lib/acp/types.ts';
 import type { ModesDoc } from '#lib/modes-types.ts';
-import { ezEditBase, rulesContextMessage } from '#lib/rules-chat.ts';
+import { rulesContextMessage } from '#lib/rules-chat.ts';
 import { diffRules, highlightedRules, isEmptyDiff } from '#lib/rules-diff.ts';
 import { exampleWorkflow, toWire } from '#lib/workflows-types.ts';
 
@@ -70,31 +69,6 @@ describe('diffRules', () => {
 });
 
 describe('rules chat helpers', () => {
-	const tool = (over: Record<string, unknown>): ChatItem =>
-		({
-			kind: 'tool',
-			id: 'i1',
-			toolCallId: 't',
-			title: 'Edit',
-			text: '',
-			status: 'completed',
-			...over
-		}) as ChatItem;
-
-	it('finds the worktree prefix of a finished .ez edit', () => {
-		expect(ezEditBase(tool({ text: 'Edit /workspace/worktrees/chat-1/.ez/modes.toml' }))).toBe(
-			'/workspace/worktrees/chat-1/'
-		);
-		expect(ezEditBase(tool({ title: 'Write .ez/workflows.toml' }))).toBe('');
-	});
-
-	it('ignores unfinished, unrelated and read-only calls', () => {
-		expect(ezEditBase(tool({ status: 'in_progress', text: 'Edit .ez/modes.toml' }))).toBeNull();
-		expect(ezEditBase(tool({ text: 'Edit src/main.rs' }))).toBeNull();
-		expect(ezEditBase(tool({ toolKind: 'read', text: 'Read .ez/modes.toml' }))).toBeNull();
-		expect(ezEditBase({ kind: 'agent', id: 'x', text: '.ez/modes.toml' })).toBeNull();
-	});
-
 	it('the context message carries the vocabulary, both files and the never-commit rule', () => {
 		const m = rulesContextMessage('version = 1', null);
 		expect(m).toContain('When <events>');

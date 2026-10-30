@@ -53,21 +53,21 @@ const firstError = (issues: { severity: string; message: string }[]) =>
 	issues.find((i) => i.severity === 'error')?.message;
 
 /**
- * Read the agent's two files from the sandbox (`base` is the directory prefix its edit named),
- * validate them through tracks and compare them with the saved ones. `proposal: null` means the
- * files do not differ from the saved ones.
+ * Read the agent's two files from the sandbox (relative paths: the sandbox resolves them against
+ * the chat's worktree), validate them through tracks and compare them with the saved ones.
+ * `proposal: null` means the files do not differ from the saved ones. `key` identifies the content
+ * read; when it equals `prevKey` nothing is validated and `same` is true.
  */
 export async function buildProposal(
-	base: string,
 	deps: ProposalDeps,
-	saved: Baseline
-): Promise<Result<{ proposal: Proposal | null }>> {
-	const [w, m] = await Promise.all([
-		read(deps, `${base}${WORKFLOWS_PATH}`),
-		read(deps, `${base}${MODES_PATH}`)
-	]);
+	saved: Baseline,
+	prevKey?: string | null
+): Promise<Result<{ proposal: Proposal | null; key: string; same?: boolean }>> {
+	const [w, m] = await Promise.all([read(deps, WORKFLOWS_PATH), read(deps, MODES_PATH)]);
 	if (!w.ok) return w;
 	if (!m.ok) return m;
+	const key = JSON.stringify([w.text, m.text]);
+	if (key === prevKey) return { ok: true, proposal: null, key, same: true };
 
 	let modes = saved.modes;
 	let modesToml = saved.modesToml;
@@ -94,9 +94,10 @@ export async function buildProposal(
 	}
 
 	const diff = diffRules(saved.file, file, saved.modes, modes);
-	if (isEmptyDiff(diff)) return { ok: true, proposal: null };
+	if (isEmptyDiff(diff)) return { ok: true, proposal: null, key };
 	return {
 		ok: true,
+		key,
 		proposal: {
 			diff,
 			file,

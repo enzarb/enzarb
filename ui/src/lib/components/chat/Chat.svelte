@@ -23,7 +23,8 @@
 		connect,
 		wrapFirst,
 		onSession,
-		onItems
+		onItems,
+		onBusy
 	}: {
 		project: string;
 		/** Override the sandbox connection (tests); defaults to the chat's token + websocket path. */
@@ -34,6 +35,8 @@
 		onSession?: (session: AcpSession) => void;
 		/** Called whenever the transcript changes. */
 		onItems?: (items: ChatItem[]) => void;
+		/** Called when a prompt turn starts (true) or ends (false). */
+		onBusy?: (busy: boolean) => void;
 	} = $props();
 
 	let first = true;
@@ -92,6 +95,10 @@
 	$effect(() => {
 		const items = st.chat.items;
 		untrack(() => onItems)?.(items);
+	});
+	$effect(() => {
+		const b = st.busy;
+		untrack(() => onBusy)?.(b);
 	});
 	const onAction = (a: 'retry' | 'reconnect' | 'take_over') => {
 		void a;

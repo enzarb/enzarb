@@ -336,10 +336,11 @@ async fn session_loop(state: Arc<AppState>, socket: WebSocket) {
             // A few KiB at most, off the event loop; the reply carries failures.
             Event::Ctrl(Ctrl::FileRead { id: rid, path }) => {
                 let root = state.config.workspace.clone();
+                let base = state.chats.worktree_of(id);
                 let session = session.clone();
                 tasks.spawn(async move {
                     let reply = tokio::task::spawn_blocking(move || {
-                        crate::file_read::read(&root, rid, path)
+                        crate::file_read::read(&root, base.as_deref(), rid, path)
                     })
                     .await;
                     if let Ok(reply) = reply

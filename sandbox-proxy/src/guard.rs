@@ -75,7 +75,7 @@ pub enum SandboxFrame {
 
 /// Features this proxy knows how to validate and relay. `welcome.features` to
 /// the browser is the sandbox's list intersected with this one.
-pub const PROXY_FEATURES: &[&str] = &[feature::ACP, feature::FILE_READ];
+pub const PROXY_FEATURES: &[&str] = &[feature::ACP, feature::FILE_READ, feature::FILE_READ_CHAT];
 
 /// The features to advertise to the browser.
 pub fn negotiated_features(sandbox: &[String]) -> Vec<String> {
@@ -792,6 +792,10 @@ mod tests {
         assert_eq!(
             negotiated_features(&s(&["file_read", "acp"])),
             s(&["acp", "file_read"])
+        );
+        assert_eq!(
+            negotiated_features(&s(&["file_read_chat", "file_read", "acp"])),
+            s(&["acp", "file_read", "file_read_chat"])
         );
         assert!(negotiated_features(&s(&["future"])).is_empty());
         assert!(negotiated_features(&[]).is_empty());

@@ -42,6 +42,10 @@ pub mod feature {
     /// The server answers `file_read` with `file`. Clients must only send
     /// `file_read` after seeing it (an old server ignores the request).
     pub const FILE_READ: &str = "file_read";
+    /// `file_read` on the mux session of a chat resolves a relative path
+    /// against that chat's worktree (not `/workspace`). Send a relative path
+    /// meant for a chat's worktree only after seeing it; implies [`FILE_READ`].
+    pub const FILE_READ_CHAT: &str = "file_read_chat";
     /// The server runs ADR-0022 steps (`step_*` and `session_event`). Clients
     /// must only send `step_*` after seeing it.
     pub const STEPS: &str = "steps";
