@@ -69,4 +69,18 @@ describe('ChatTranscript', () => {
 		await view.rerender({ items: cancelled, epoch: 2, onAnswer: vi.fn() });
 		expect(page.getByRole('button').elements()).toHaveLength(0);
 	});
+
+	it('collapses the hidden context of a user message and keeps the user text visible', async () => {
+		const hideContext = (t: string) =>
+			t.startsWith('CTX|') ? { context: 'the secret rules', rest: t.slice(4) } : null;
+		render(ChatTranscript, {
+			items: [{ kind: 'user', id: 'u', text: 'CTX|add a rule' }],
+			epoch: 1,
+			onAnswer: vi.fn(),
+			hideContext
+		});
+		await expect.element(page.getByText('add a rule')).toBeVisible();
+		await expect.element(page.getByText('Context: current rules and file formats')).toBeVisible();
+		await expect.element(page.getByText('the secret rules')).not.toBeVisible();
+	});
 });

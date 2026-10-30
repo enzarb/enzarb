@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { ModesDoc } from '#lib/modes-types.ts';
-import { rulesContextMessage } from '#lib/rules-chat.ts';
+import {
+	createAutoFix,
+	fixMessage,
+	MAX_AUTO_FIXES,
+	rulesContextMessage,
+	splitContext
+} from '#lib/rules-chat.ts';
 import { diffRules, highlightedRules, isEmptyDiff } from '#lib/rules-diff.ts';
 import { exampleWorkflow, toWire } from '#lib/workflows-types.ts';
 
@@ -76,5 +82,34 @@ describe('rules chat helpers', () => {
 		expect(m).toContain('(does not exist yet)');
 		expect(m).toContain('.ez/workflows.toml');
 		expect(m).toContain('Never commit');
+	});
+
+	it('the context message teaches both formats with a valid example', () => {
+		const m = rulesContextMessage(null, null);
+		expect(m).toContain('[workflows.<id>.nodes.<node-id>]');
+		expect(m).toContain('never write [[');
+		expect(m).toContain('default_mode');
+		expect(m).toContain('[modes.reviewer]');
+		expect(m).toContain('[workflows.review-pr.nodes.review]');
+	});
+
+	it('splits the context from the users own text', () => {
+		const m = `${rulesContextMessage(null, null)}\n\nadd a rule`;
+		const s = splitContext(m);
+		expect(s?.rest).toBe('add a rule');
+		expect(s?.context).toContain('Current .ez/workflows.toml');
+		expect(splitContext('hello')).toBeNull();
+	});
+
+	it('auto fix: once per distinct error set, at most twice until reset', () => {
+		const f = createAutoFix();
+		expect(f.next('a')).toBe(fixMessage('a'));
+		expect(f.next('a')).toBeNull();
+		expect(f.next('b')).toBe(fixMessage('b'));
+		expect(MAX_AUTO_FIXES).toBe(2);
+		expect(f.next('c')).toBeNull();
+		f.reset();
+		expect(f.next('c')).toBe(fixMessage('c'));
+		expect(fixMessage('x')).toContain('x');
 	});
 });

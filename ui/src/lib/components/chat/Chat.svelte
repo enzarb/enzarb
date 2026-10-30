@@ -24,7 +24,9 @@
 		wrapFirst,
 		onSession,
 		onItems,
-		onBusy
+		onBusy,
+		onUserSend,
+		hideContext
 	}: {
 		project: string;
 		/** Override the sandbox connection (tests); defaults to the chat's token + websocket path. */
@@ -37,10 +39,15 @@
 		onItems?: (items: ChatItem[]) => void;
 		/** Called when a prompt turn starts (true) or ends (false). */
 		onBusy?: (busy: boolean) => void;
+		/** Called when the user sends a message from the composer. */
+		onUserSend?: () => void;
+		/** Splits a hidden context block off a user message (shown collapsed). */
+		hideContext?: (text: string) => { context: string; rest: string } | null;
 	} = $props();
 
 	let first = true;
 	const send = (text: string) => {
+		untrack(() => onUserSend)?.();
 		const wrap = untrack(() => wrapFirst);
 		const out = first && wrap ? wrap(text) : text;
 		first = false;
@@ -134,6 +141,7 @@
 		<ChatTranscript
 			items={st.chat.items}
 			epoch={st.epoch}
+			{hideContext}
 			onAnswer={chat.answer}
 			onAnswerQuestion={chat.answerQuestion}
 		/>

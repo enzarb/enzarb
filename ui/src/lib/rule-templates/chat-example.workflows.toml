@@ -1,0 +1,23 @@
+version = 1
+
+[workflows.review-pr]
+description = "Review pull requests"
+on = ["pull_request.opened", "pull_request.synchronize"]
+start = "review"
+
+[workflows.review-pr.nodes.review]
+type = "agent"
+mode = "reviewer"
+instruction = "Review pull request #{{ event.pull_request.number }}: {{ event.pull_request.title }}"
+result = { summary = { type = "string" } }
+next = "comment"
+
+[workflows.review-pr.nodes.comment]
+type = "action"
+action = "comment"
+body = "{{ nodes.review.result.summary }}"
+next = "done"
+
+[workflows.review-pr.nodes.done]
+type = "end"
+status = "done"

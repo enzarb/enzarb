@@ -51,3 +51,15 @@ fn every_template_is_valid() {
         assert!(errors.is_empty(), "{}: {errors:?}", t.id);
     }
 }
+
+/// The example pair the rules chat shows the agent (`rules-chat.ts`) is valid.
+#[test]
+fn chat_example_is_valid() {
+    let modes = include_str!("../../ui/src/lib/rule-templates/chat-example.modes.toml");
+    let workflows = include_str!("../../ui/src/lib/rule-templates/chat-example.workflows.toml");
+    let catalog = ModeCatalog::from_modes_toml(modes).unwrap();
+    let (parsed, report) = ez_workflow::check(&Engine::new(), workflows, Some(&catalog));
+    assert!(parsed.is_some(), "does not parse");
+    let errors: Vec<_> = report.errors().collect();
+    assert!(errors.is_empty(), "{errors:?}");
+}

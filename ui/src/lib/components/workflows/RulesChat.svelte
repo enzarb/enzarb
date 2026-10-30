@@ -11,6 +11,7 @@
 	import type { AcpSession, ConnectionDeps } from '#lib/acp/connection.ts';
 	import type { ChatItem } from '#lib/acp/types.ts';
 	import Chat from '../chat/Chat.svelte';
+	import Button from '../form/Button.svelte';
 	import Notice from '../ui/Notice.svelte';
 	import type { StepItem } from '../ui/StepList.svelte';
 	import RulesProposal from './RulesProposal.svelte';
@@ -20,6 +21,9 @@
 		FILE_READ_CHAT_FEATURE,
 		FILE_READ_FEATURE,
 		REVERT_MESSAGE,
+		createAutoFix,
+		fixMessage,
+		splitContext,
 		rulesContextMessage
 	} from '#lib/rules-chat.ts';
 	import { highlightedRules, type RulesDiff } from '#lib/rules-diff.ts';
@@ -60,6 +64,8 @@
 	let busy = $state(false);
 	const seen = new SvelteSet<string>();
 	let seq = 0;
+	const autoFix = createAutoFix();
+	let turnBusy = false;
 
 	const diff = $derived<RulesDiff | null>(proposal?.diff ?? null);
 	$effect(() => {
@@ -117,6 +123,12 @@
 					);
 					if (mine !== seq) continue;
 					problem = r.ok ? '' : r.message;
+					if (r.ok) autoFix.reset();
+					else if (!turnBusy) {
+						// the turn that wrote the files has ended: ask once per distinct error set
+						const msg = autoFix.next(r.message);
+						if (msg) chat?.say(msg);
+					}
 					if (r.ok && !r.same) {
 						lastKey = r.key;
 						proposal = r.proposal;
@@ -149,6 +161,7 @@
 
 	let wasBusy = false;
 	function onBusy(busy: boolean) {
+		turnBusy = busy;
 		if (wasBusy && !busy) void refresh();
 		wasBusy = busy;
 	}
@@ -211,6 +224,10 @@
 		}
 	}
 
+	function fixIt() {
+		if (problem) chat?.say(fixMessage(problem));
+	}
+
 	function discard() {
 		proposal = null;
 		steps = [];
@@ -220,7 +237,12 @@
 
 <aside class="ez-rules-chat ez-stack" aria-label="Chat about rules">
 	{#if problem}
-		<Notice tone="warning" title="The agent's change cannot be used yet">{problem}</Notice>
+		<Notice tone="warning" title="The agent's change cannot be used yet"
+			>{problem}
+			<div class="ez-cluster">
+				<Button onclick={fixIt}>Ask the agent to fix it</Button>
+			</div>
+		</Notice>
 	{/if}
 	{#if proposal}
 		<RulesProposal diff={proposal.diff} {steps} {busy} {accept} {discard} />
@@ -233,6 +255,8 @@
 			{wrapFirst}
 			{onItems}
 			{onBusy}
+			onUserSend={() => autoFix.reset()}
+			hideContext={splitContext}
 			onSession={(s) => (session = s)}
 		/>
 	{/key}
