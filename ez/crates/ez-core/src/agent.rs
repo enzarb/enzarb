@@ -1984,8 +1984,9 @@ fn replay(cwd: &Path, session_id: &str, records: &[transcript::Stamped], client:
             } => {
                 let locations = ["file_path", "path"]
                     .iter()
-                    .filter_map(|k| input.get(*k).and_then(Value::as_str).map(String::from))
+                    .filter_map(|k| input.get(*k).and_then(Value::as_str))
                     .take(1)
+                    .map(|p| cwd.join(p).to_string_lossy().into_owned())
                     .collect();
                 client.send_event(
                     session_id,

@@ -164,6 +164,7 @@
 		try {
 			const cur = await templates.load();
 			let modesText: string | null | undefined;
+			let modesCommitted = false;
 			if (p.modes && p.modesChanged) {
 				const m = await templates.renderModes(p.modes, cur.text);
 				if (!m.ok) return fail('check', m.message);
@@ -185,8 +186,9 @@
 				});
 				if (!r.ok) return fail('modes', r.message);
 				set('modes', 'done');
+				modesCommitted = true;
 			}
-			let result = { unchanged: true, commitUrl: null as string | null };
+			let result = { unchanged: !modesCommitted, commitUrl: null as string | null };
 			if (p.rulesChanged) {
 				set('rules', 'active');
 				const r = await api.save({
@@ -195,7 +197,7 @@
 				});
 				if (!r.ok) return fail('rules', r.message);
 				set('rules', 'done');
-				result = { unchanged: r.unchanged, commitUrl: r.commitUrl };
+				result = { unchanged: r.unchanged && !modesCommitted, commitUrl: r.commitUrl };
 			}
 			proposal = null;
 			lastKey = null;

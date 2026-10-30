@@ -157,6 +157,28 @@ describe('RulesChat', () => {
 		await expect.element(page.getByText(/Added the rule "review"/)).not.toBeInTheDocument();
 	});
 
+	it('reports a modes-only accept as a change', async () => {
+		sessionStorage.clear();
+		const t = setup({
+			'.ez/workflows.toml': 'version = 1\n',
+			'.ez/modes.toml': '[modes.reviewer]\n'
+		});
+		t.props.check.checkRules.mockImplementation(async () => ({
+			ok: true as const,
+			diagnostics: [],
+			file: wire
+		}));
+		render(RulesChat, t.props);
+		const box = page.getByRole('textbox', { name: 'Message' });
+		await expect.element(box).toBeEnabled();
+		await box.fill('add a reviewer mode');
+		await page.getByRole('button', { name: 'Send' }).click();
+		await page.getByRole('button', { name: 'Accept and commit' }).click();
+		await vi.waitFor(() => expect(t.saved).toHaveBeenCalledOnce());
+		expect(t.calls).toEqual(['modes']);
+		expect(t.saved.mock.calls[0][0].unchanged).toBe(false);
+	});
+
 	it('proposes nothing when the files did not change', async () => {
 		sessionStorage.clear();
 		const t = setup({
