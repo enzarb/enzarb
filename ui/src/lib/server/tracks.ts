@@ -63,6 +63,17 @@ export interface TracksClient {
 	run(id: string): Promise<RunDetail | null>;
 	/** Ask the executor to cancel the run; resolves false when it had already ended. */
 	stopRun(id: string): Promise<boolean>;
+	/**
+	 * Start `workflow` on issue or pull request `number` of `repo` as `actor` (`POST /v1/runs`, a
+	 * synthetic `manual` event; the workflow's `on` must list it). `alreadyRunning`: the subject
+	 * already has a live run of the workflow (409), which is not an error for a button.
+	 */
+	startRun(input: {
+		repo: string;
+		number: number;
+		workflow: string;
+		actor: string;
+	}): Promise<{ id: string | null; alreadyRunning: boolean }>;
 	/** Triggers and traces of `text` for 1-50 logged events; no side effects. */
 	dryRun(input: {
 		text: string;
@@ -259,6 +270,15 @@ export function createTracksClient(
 				return true;
 			} catch (e) {
 				if (e instanceof TracksError && e.status === 409) return false;
+				throw e;
+			}
+		},
+		startRun: async (input) => {
+			try {
+				const r = await call<{ run: { id: string } }>('/v1/runs', input);
+				return { id: r.run.id, alreadyRunning: false };
+			} catch (e) {
+				if (e instanceof TracksError && e.status === 409) return { id: null, alreadyRunning: true };
 				throw e;
 			}
 		},

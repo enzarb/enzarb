@@ -4,14 +4,16 @@
 	import AppHeader from '#lib/components/AppHeader.svelte';
 	import InstallBanner from '#lib/components/InstallBanner.svelte';
 	import Nav from '#lib/components/Nav.svelte';
+	import { taskCount } from '#lib/tasks.remote.ts';
 	import type { LayoutProps } from './$types';
 
 	let { children, data }: LayoutProps = $props();
+	const tasks = taskCount();
 </script>
 
 <div class="ez-shell">
 	<AppHeader />
-	<Nav />
+	<Nav count={tasks.current ?? 0} />
 	<main class="ez-content">
 		<div class="ez-page">
 			{#await data.installBanner then banner}

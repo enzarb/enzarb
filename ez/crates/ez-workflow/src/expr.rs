@@ -63,6 +63,7 @@ impl Engine {
         env.set_undefined_behavior(UndefinedBehavior::Strict);
         env.set_fuel(Some(FUEL));
         env.set_recursion_limit(64);
+        env.add_filter("regex_match", regex_match);
         env.set_auto_escape_callback(|name| {
             if name.ends_with(SHELL_SUFFIX) {
                 AutoEscape::Custom(SHELL)
@@ -137,6 +138,22 @@ impl Engine {
         let expr = self.env.compile_expression(src).map_err(describe)?;
         Ok(filter_globals(expr.undeclared_variables(true)))
     }
+}
+
+/// `text | regex_match(pattern)`: whether `pattern` matches anywhere in `text`. Linear-time
+/// (the `regex` crate) with a compile-size limit, so a pattern from a workflow file cannot hurt
+/// the engine. Use inline flags for multi-line text: `(?im)^[[:space:]]*/ez implement`; minijinja string literals treat a backslash as an escape, so avoid `\\s`/`\\b`.
+fn regex_match(text: &str, pattern: &str) -> Result<bool, Error> {
+    let re = regex::RegexBuilder::new(pattern)
+        .size_limit(256 * 1024)
+        .build()
+        .map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidOperation,
+                format!("regex_match: invalid pattern: {e}"),
+            )
+        })?;
+    Ok(re.is_match(text))
 }
 
 fn filter_globals(vars: impl IntoIterator<Item = String>) -> BTreeSet<String> {
@@ -240,6 +257,22 @@ mod tests {
         assert!(!e.eval_bool("result.decision in ['x', 'y']", &ctx).unwrap());
         assert!(e.eval_bool("missing", &ctx).is_err());
         assert!(e.eval_bool("result.decision ==", &ctx).is_err());
+    }
+
+    #[test]
+    fn regex_match_filters_text() {
+        let e = Engine::new();
+        let ctx = json!({"c": "thanks\n  /EZ implement please\nbye", "n": "no command here"});
+        let cond = r"c | regex_match('(?im)^[[:space:]]*(/ez|@enzarb)[[:space:]]+implement([[:space:]]|$)')";
+        assert!(e.eval_bool(cond, &ctx).unwrap());
+        assert!(!e.eval_bool(&cond.replace("c |", "n |"), &ctx).unwrap());
+        // Not at the start of a line.
+        assert!(
+            !e.eval_bool(cond, &json!({"c": "please /ez implement"}))
+                .unwrap()
+        );
+        assert!(e.eval_bool("c | regex_match('(')", &ctx).is_err());
+        assert!(e.expr_vars(cond).unwrap().contains("c"));
     }
 
     #[test]

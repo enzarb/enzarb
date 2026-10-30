@@ -29,6 +29,9 @@ pub struct AppState {
     pub engine: Arc<Engine>,
     /// Postgres, when routing is on; `/v1/decisions` and `event_ids` need it.
     pub pool: Option<sqlx::PgPool>,
+    /// GitHub reads and Project lookup, for `POST /v1/runs` (set with routing).
+    pub source: Option<Arc<dyn crate::github::RepoSource>>,
+    pub projects: Option<Arc<dyn crate::projects::ProjectLookup>>,
 }
 
 impl AppState {
@@ -37,7 +40,19 @@ impl AppState {
             token: Arc::new(token),
             engine: Arc::new(Engine::new()),
             pool: None,
+            source: None,
+            projects: None,
         }
+    }
+
+    pub fn with_routing(
+        mut self,
+        source: Arc<dyn crate::github::RepoSource>,
+        projects: Arc<dyn crate::projects::ProjectLookup>,
+    ) -> Self {
+        self.source = Some(source);
+        self.projects = Some(projects);
+        self
     }
 
     pub fn with_pool(mut self, pool: sqlx::PgPool) -> Self {
@@ -56,7 +71,10 @@ pub fn router(state: AppState, max_body_bytes: usize) -> Router {
         .route("/v1/workflows/render", post(workflows_render))
         .route("/v1/dry-run", post(dry_run))
         .route("/v1/decisions", get(decisions))
-        .route("/v1/runs", get(crate::runs_api::list))
+        .route(
+            "/v1/runs",
+            get(crate::runs_api::list).post(crate::manual::start),
+        )
         .route("/v1/runs/{id}", get(crate::runs_api::get))
         .route("/v1/runs/{id}/stop", post(crate::runs_api::stop))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
@@ -90,7 +108,7 @@ impl ApiError {
         }
     }
 
-    fn with(mut self, key: &'static str, value: Value) -> Self {
+    pub(crate) fn with(mut self, key: &'static str, value: Value) -> Self {
         self.extra = Some(Box::new((key, value)));
         self
     }

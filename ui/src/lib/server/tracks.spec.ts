@@ -128,4 +128,19 @@ describe('tracks client', () => {
 			reason: 'on `issues`'
 		});
 	});
+
+	it('starts a run by hand and treats a live run as a normal answer', async () => {
+		const f = vi.fn(async () => json(200, { run: { id: 'r1' } }));
+		const c = createTracksClient(cfg, f as unknown as typeof fetch);
+		const input = { repo: 'o/r', number: 4, workflow: 'implement', actor: 'bob' };
+		expect(await c.startRun(input)).toEqual({ id: 'r1', alreadyRunning: false });
+		const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+		expect(url).toBe('http://tracks:8080/v1/runs');
+		expect(init.method).toBe('POST');
+		expect(JSON.parse(init.body as string)).toEqual(input);
+		f.mockResolvedValueOnce(json(409, { error: { code: 'already_running', message: 'busy' } }));
+		expect(await c.startRun(input)).toEqual({ id: null, alreadyRunning: true });
+		f.mockResolvedValueOnce(json(422, { error: { code: 'not_startable', message: 'no' } }));
+		await expect(c.startRun(input)).rejects.toMatchObject({ status: 422, code: 'not_startable' });
+	});
 });

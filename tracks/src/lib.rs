@@ -12,6 +12,7 @@ pub mod config;
 pub mod db;
 pub mod exec;
 pub mod github;
+pub mod manual;
 pub mod projects;
 pub mod router;
 pub mod runs_api;

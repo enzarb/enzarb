@@ -25,6 +25,7 @@ export const PROJECT_TABS = [
 	{ slug: 'chat', label: 'Chat' },
 	{ slug: 'events', label: 'Events' },
 	{ slug: 'runs', label: 'Runs' },
+	{ slug: 'tasks', label: 'Tasks' },
 	{ slug: 'modes', label: 'Modes' },
 	{ slug: 'workflows', label: 'Workflows' },
 	{ slug: 'settings', label: 'Settings' }
