@@ -37,7 +37,13 @@ function fakeTracks(runs: RunDetail[]) {
 	} as unknown as TracksClient & { startRun: ReturnType<typeof vi.fn> };
 }
 
-const github = (pulls: unknown[] = [], issues: unknown[] = [], note?: string) => ({
+const github = (
+	pulls: unknown[] = [],
+	issues: unknown[] = [],
+	note?: string,
+	open: number[] | null = null
+) => ({
+	openSubjects: vi.fn(async () => ({ open: open ? new Set(open) : null })),
 	pulls: vi.fn(async () => ({ items: pulls as never[], note })),
 	issues: vi.fn(async () => ({ items: issues as never[] }))
 });
@@ -119,6 +125,34 @@ describe('projectTasks', () => {
 		);
 		const { tasks } = await projectTasks({ tracks, github: gh }, project);
 		expect(tasks).toEqual([]);
+	});
+
+	it('hides failed and waiting runs whose subject is closed, keeps open and unknown ones', async () => {
+		const failed = (id: string, n: number) =>
+			run({
+				id,
+				workflow: `w${n}`,
+				status: 'failed',
+				subject: { kind: 'pull_request', number: n }
+			});
+		const mk = () =>
+			fakeTracks([
+				failed('aaaaaaaa-0000-4000-8000-000000000001', 1),
+				failed('aaaaaaaa-0000-4000-8000-000000000002', 2),
+				run({
+					id: 'aaaaaaaa-0000-4000-8000-000000000003',
+					status: 'waiting',
+					workflow: 'w3',
+					subject: { kind: 'issue', number: 3 }
+				})
+			]);
+		const shown = async (open: number[] | null) =>
+			(await projectTasks({ tracks: mk(), github: github([], [], undefined, open) }, project)).tasks
+				.map((t) => t.number)
+				.sort();
+		expect(await shown([2])).toEqual([2]);
+		expect(await shown([])).toEqual([]);
+		expect(await shown(null)).toEqual([1, 2, 3]);
 	});
 
 	it('takes the first (newest) run per subject and workflow: an older failure is not shown', async () => {

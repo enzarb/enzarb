@@ -53,8 +53,19 @@ export async function projectTasks(
 		}
 	}
 
+	// A run only waits on a human while its subject is open: one listing per repo, and an
+	// unknown answer (GitHub unavailable) keeps everything.
+	const openBy = new Map<string, Set<number> | null>();
+	for (const repo of new Set(runs.filter((r) => r.subject).map((r) => r.repo.toLowerCase()))) {
+		const { open, note } = await deps.github.openSubjects(repo);
+		openBy.set(repo, open);
+		if (note && !notes.includes(note)) notes.push(note);
+	}
+	const isClosed = (r: RunSummary) =>
+		!!r.subject && openBy.get(r.repo.toLowerCase())?.has(r.subject.number) === false;
+
 	// Parked runs: what they wait for needs the node runs.
-	const waiting = runs.filter((r) => r.status === 'waiting');
+	const waiting = runs.filter((r) => r.status === 'waiting' && !isClosed(r));
 	const details = await Promise.all(
 		waiting.map((r) => deps.tracks!.run(r.id).catch((): RunDetail | null => null))
 	);
@@ -88,7 +99,7 @@ export async function projectTasks(
 		if (!latest.has(k)) latest.set(k, r);
 	}
 	for (const r of latest.values()) {
-		if (r.status !== 'failed') continue;
+		if (r.status !== 'failed' || isClosed(r)) continue;
 		tasks.push({
 			kind: 'failed',
 			key: `failed:${r.id}`,

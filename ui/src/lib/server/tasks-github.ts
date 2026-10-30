@@ -33,6 +33,8 @@ export interface OpenIssue {
 export interface GithubReads {
 	pulls(repo: string): Promise<{ items: OpenPull[]; note?: string }>;
 	issues(repo: string, label: string): Promise<{ items: OpenIssue[]; note?: string }>;
+	/** Numbers of every open issue and pull request; `open` is null when GitHub could not tell. */
+	openSubjects(repo: string): Promise<{ open: Set<number> | null; note?: string }>;
 }
 
 export interface GithubReadsDeps {
@@ -69,8 +71,11 @@ export function createGithubReads({
 	fetch: doFetch = fetch,
 	now = Date.now
 }: GithubReadsDeps): GithubReads {
-	const cache = new Map<string, { at: number; value: unknown[] }>();
-	const inflight = new Map<string, Promise<{ items: unknown[]; note?: string }>>();
+	const cache = new Map<string, { at: number; value: unknown[]; truncated: boolean }>();
+	const inflight = new Map<
+		string,
+		Promise<{ items: unknown[]; note?: string; truncated?: boolean }>
+	>();
 	let blockedUntil = 0;
 
 	async function list<T>(
@@ -78,14 +83,16 @@ export function createGithubReads({
 		perms: RepoPermissions,
 		path: string,
 		pick: (raw: Record<string, unknown>) => T | null
-	): Promise<{ items: T[]; note?: string }> {
+	): Promise<{ items: T[]; note?: string; truncated?: boolean }> {
 		const key = `${repo.toLowerCase()}\0${path}`;
 		const hit = cache.get(key);
-		if (hit && now() - hit.at < TTL_MS) return { items: hit.value as T[] };
+		if (hit && now() - hit.at < TTL_MS)
+			return { items: hit.value as T[], truncated: hit.truncated };
 		const stale = (note: string) => ({ items: (hit?.value ?? []) as T[], note });
 		if (now() < blockedUntil)
 			return stale(`GitHub rate limit: ${repo} is shown from memory until it lifts`);
-		let p = inflight.get(key) as Promise<{ items: T[]; note?: string }> | undefined;
+		let p = inflight.get(key) as
+			Promise<{ items: T[]; note?: string; truncated?: boolean }> | undefined;
 		if (!p) {
 			p = (async () => {
 				const t = await token(repo, perms);
@@ -119,8 +126,10 @@ export function createGithubReads({
 						}
 					url = nextLink(res);
 				}
-				cache.set(key, { at: now(), value: out });
-				return { items: out };
+				// More pages than MAX_PAGES: the list is incomplete.
+				const truncated = url !== null;
+				cache.set(key, { at: now(), value: out, truncated });
+				return { items: out, truncated };
 			})().finally(() => inflight.delete(key));
 			inflight.set(key, p);
 		}
@@ -131,6 +140,17 @@ export function createGithubReads({
 	const enc = (repo: string) => repo.split('/').map(encodeURIComponent).join('/');
 
 	return {
+		openSubjects: async (repo) => {
+			const r = await list<number>(
+				repo,
+				{ issues: 'read', pull_requests: 'read' },
+				`/repos/${enc(repo)}/issues?state=open&sort=updated&direction=desc`,
+				(raw) => (typeof raw.number === 'number' ? raw.number : null)
+			);
+			if (r.note) return { open: null, note: r.note };
+			// An incomplete list cannot prove a subject closed: treat the state as unknown.
+			return r.truncated ? { open: null } : { open: new Set(r.items) };
+		},
 		pulls: (repo) =>
 			list<OpenPull>(
 				repo,

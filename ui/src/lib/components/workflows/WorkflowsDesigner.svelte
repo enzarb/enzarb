@@ -274,8 +274,8 @@
 	<p class="ez-muted">
 		<span class="ez-mono">{initial.path}</span> on <span class="ez-mono">{repoName}</span>, branch
 		<span class="ez-mono">{initial.branch}</span>. Saving commits straight to that branch; runs use
-		the committed file, so a file with errors is never saved. enzarb does not start runs yet: test
-		your workflows with a dry run.
+		the committed file, so a file with errors is never saved. Saved workflows run on matching
+		events; test changes with a dry run first.
 		{#if initial.modesToml === null}
 			The branch has no <span class="ez-mono">.ez/modes.toml</span>, so agent nodes have no modes to
 			use yet.
