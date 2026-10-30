@@ -9,7 +9,9 @@ import type { CommitResult, ReadResult } from '../../src/lib/server/repo-files.t
 export { coAuthorTrailer, MAX_FILE_BYTES } from '../../src/lib/server/repo-files.ts';
 export type { CommitResult, ReadResult, RepoFile } from '../../src/lib/server/repo-files.ts';
 
-export const REPO_DIR = path.resolve(import.meta.dirname, '../../test-results/.repo');
+// From the working directory (ui/), not import.meta.dirname: the production e2e build bundles this
+// stub into .svelte-kit/output, where a module-relative path would differ from the test process's.
+export const REPO_DIR = path.resolve(process.cwd(), 'test-results/.repo');
 
 const sha = (text: string) => createHash('sha1').update(text).digest('hex');
 const file = (repo: string, p: string) => path.join(REPO_DIR, repo, p);
