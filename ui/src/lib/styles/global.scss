@@ -3239,6 +3239,23 @@ textarea.ez-control {
 	display: grid;
 	gap: 0.5rem;
 }
+.ez-rules__item--changed {
+	border-color: var(--ez-accent, currentColor);
+	border-width: 2px;
+}
+.ez-rules-with-chat {
+	display: grid;
+	gap: 1rem;
+	grid-template-columns: minmax(0, 1fr);
+	@media (min-width: 64rem) {
+		grid-template-columns: minmax(0, 3fr) minmax(20rem, 2fr);
+		align-items: start;
+	}
+}
+.ez-rules-chat {
+	min-height: 24rem;
+	max-height: 80vh;
+}
 .ez-rules__sentence {
 	margin: 0;
 	display: flex;

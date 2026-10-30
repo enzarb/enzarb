@@ -29,6 +29,7 @@ pub mod config;
 pub mod docker_prune;
 pub mod dockerd;
 pub mod exec;
+pub mod file_read;
 pub mod mcp;
 pub mod netgit;
 pub mod observer;

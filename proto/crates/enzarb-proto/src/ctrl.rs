@@ -39,6 +39,9 @@ pub mod feature {
     /// The server answers `stats_request` with `stats`. Clients must only
     /// send `stats_request` after seeing it (an old server ignores the request).
     pub const STATS: &str = "stats";
+    /// The server answers `file_read` with `file`. Clients must only send
+    /// `file_read` after seeing it (an old server ignores the request).
+    pub const FILE_READ: &str = "file_read";
     /// The server runs ADR-0022 steps (`step_*` and `session_event`). Clients
     /// must only send `step_*` after seeing it.
     pub const STEPS: &str = "steps";
@@ -50,6 +53,20 @@ pub mod feature {
     pub const MAX_FEATURES: usize = 64;
     /// ...and drop any longer than this many bytes.
     pub const MAX_FEATURE_LEN: usize = 64;
+}
+
+/// Largest file `file_read` returns (bytes of the raw file). Chosen so the
+/// JSON-escaped reply stays under the 1 MiB frame cap even in the worst case.
+pub const MAX_FILE_READ_BYTES: u64 = 128 * 1024;
+
+/// Standard `file.code` values for a failed `file_read`. Open set.
+pub mod file_error_code {
+    pub const NOT_FOUND: &str = "not_found";
+    pub const OUTSIDE_WORKSPACE: &str = "outside_workspace";
+    pub const NOT_A_FILE: &str = "not_a_file";
+    pub const TOO_LARGE: &str = "too_large";
+    pub const NOT_UTF8: &str = "not_utf8";
+    pub const IO: &str = "io";
 }
 
 /// Standard `open_error.code` values. Unknown codes must be tolerated.
@@ -406,6 +423,26 @@ pub enum Ctrl {
     StatsRequest,
     /// Reply to `stats_request`.
     Stats(SandboxStats),
+    /// Client asks for one UTF-8 text file of the sandbox workspace; answered
+    /// by `file` with the same `id`. `path` is relative to `/workspace` (or
+    /// absolute under it); anything that resolves outside is refused. Only
+    /// send it after `welcome.features` contained [`feature::FILE_READ`].
+    FileRead {
+        id: String,
+        path: String,
+    },
+    /// Reply to `file_read`: `content` on success, else `code`
+    /// (see [`file_error_code`]) and `message`.
+    File {
+        id: String,
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
     /// Browser -> proxy (client -> server): clear the stored credential.
     CredentialClear {
         kind: CredentialKind,
@@ -456,7 +493,7 @@ impl Ctrl {
             Ctrl::Open { .. } | Ctrl::Resize { .. } | Ctrl::Error { .. } => {
                 Direction::ClientToServer(ANY_CLIENT)
             }
-            Ctrl::CredentialStatus | Ctrl::CredentialClear { .. } => {
+            Ctrl::CredentialStatus | Ctrl::CredentialClear { .. } | Ctrl::FileRead { .. } => {
                 Direction::ClientToServer(&[Ui, Proxy])
             }
             // The ack of a legacy `credential_captured`, sent by sandbox-proxy.
@@ -476,7 +513,8 @@ impl Ctrl {
             | Ctrl::SessionEvent(_)
             | Ctrl::StepFinished(_)
             | Ctrl::CredentialCaptured { .. }
-            | Ctrl::Stats(_) => Direction::ServerToClient,
+            | Ctrl::Stats(_)
+            | Ctrl::File { .. } => Direction::ServerToClient,
         }
     }
 
@@ -531,17 +569,18 @@ mod tests {
         let mut tags: Vec<_> = vectors().into_iter().map(|(ty, _)| ty).collect();
         tags.sort_unstable();
         tags.dedup();
-        assert_eq!(tags.len(), 22, "{tags:?}");
+        assert_eq!(tags.len(), 24, "{tags:?}");
     }
 
     #[test]
-    fn browser_may_send_five_messages() {
+    fn browser_may_send_six_messages() {
         assert_eq!(
             allowed(ClientKind::Ui),
             [
                 "credential_clear",
                 "credential_status",
                 "error",
+                "file_read",
                 "open",
                 "resize"
             ]
@@ -580,6 +619,7 @@ mod tests {
                 "step_finished",
                 "credential_captured",
                 "stats",
+                "file",
             ] {
                 assert!(!a.contains(&t), "{kind:?} {t}");
             }
@@ -606,6 +646,7 @@ mod tests {
                 "credential_state",
                 "credential_status",
                 "error",
+                "file_read",
                 "resize",
                 "stats_request",
                 "step_resume",

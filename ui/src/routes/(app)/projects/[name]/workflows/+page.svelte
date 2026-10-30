@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import RulesChat from '#lib/components/workflows/RulesChat.svelte';
 	import RulesView from '#lib/components/workflows/RulesView.svelte';
 	import Button from '#lib/components/form/Button.svelte';
 	import Select from '#lib/components/form/Select.svelte';
@@ -11,7 +12,7 @@
 	import Notice from '#lib/components/ui/Notice.svelte';
 	import Skeleton from '#lib/components/ui/Skeleton.svelte';
 	import type { TemplatesApi } from '#lib/components/workflows/RulesView.svelte';
-	import { getModes, renderModesText, saveModesFile } from '#lib/modes.remote.ts';
+	import { getModes, parseModesText, renderModesText, saveModesFile } from '#lib/modes.remote.ts';
 	import {
 		checkWorkflowsText,
 		dryRunWorkflows,
@@ -37,6 +38,8 @@
 	const name = $derived(page.params.name!);
 	let repo = $state<string | undefined>(undefined);
 	const workflows = $derived(getWorkflows({ name, repo }));
+	let chatOpen = $state(false);
+	let highlight = $state(new Set<string>());
 	let committed = $state<{ unchanged: boolean; commitUrl: string | null } | null>(null);
 
 	type Loaded = { repo: string; sha: string | null; modesToml: string | null };
@@ -70,6 +73,20 @@
 		saveModes: async (input) => {
 			const res = await saveModesFile({ name, repo: r.repo, ...input });
 			return res.ok ? { ok: true } : { ok: false, message: res.message };
+		}
+	});
+	const chatApi = (r: Loaded) => ({
+		parseModes: async (text: string) => {
+			const res = await parseModesText({ name, text });
+			return res.ok
+				? { ok: true as const, doc: res.doc, issues: res.issues }
+				: { ok: false as const, message: res.message };
+		},
+		checkRules: async (text: string, modesToml: string | null) => {
+			const res = await checkWorkflowsText({ name, text, modesToml: modesToml ?? r.modesToml });
+			return res.ok
+				? { ok: true as const, diagnostics: res.diagnostics, file: res.file }
+				: { ok: false as const, message: res.message };
 		}
 	});
 	const dryRun = (r: Loaded): DryRunApi => ({
@@ -131,17 +148,39 @@
 		{/if}
 		{#key `${r.repo}@${r.sha}`}
 			{#if !advanced}
-				<RulesView
-					file={r}
-					api={api(r)}
-					dryRun={dryRun(r)}
-					templates={templatesApi(r)}
-					advanced={(id) => setView(id)}
-					saved={(s) => {
-						committed = s;
-						if (!s.unchanged) void workflows.refresh();
-					}}
-				/>
+				<div class="ez-cluster">
+					<Button onclick={() => (chatOpen = !chatOpen)}>
+						{chatOpen ? 'Close chat' : 'Chat about rules'}
+					</Button>
+				</div>
+				<div class:ez-rules-with-chat={chatOpen}>
+					<RulesView
+						{highlight}
+						file={r}
+						api={api(r)}
+						dryRun={dryRun(r)}
+						templates={templatesApi(r)}
+						advanced={(id) => setView(id)}
+						saved={(s) => {
+							committed = s;
+							if (!s.unchanged) void workflows.refresh();
+						}}
+					/>
+					{#if chatOpen}
+						<RulesChat
+							project={name}
+							file={r}
+							api={api(r)}
+							templates={templatesApi(r)}
+							check={chatApi(r)}
+							highlighted={(ids) => (highlight = ids)}
+							saved={(s) => {
+								committed = s;
+								if (!s.unchanged) void workflows.refresh();
+							}}
+						/>
+					{/if}
+				</div>
 			{:else}
 				<div><Button onclick={() => setView()}>Back to rules</Button></div>
 				<WorkflowsDesigner

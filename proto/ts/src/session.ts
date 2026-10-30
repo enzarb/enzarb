@@ -58,6 +58,11 @@ export interface CredentialInfo {
   scope?: string | null;
 }
 
+/** A `file` reply: `content` on success, else `code` + `message` (see the protocol's file error codes). */
+export type FileReply =
+  | { ok: true; path: string; content: string }
+  | { ok: false; path: string; code: string; message: string };
+
 type CtrlListener = (msg: Ctrl) => void;
 
 type Pending =
@@ -92,6 +97,8 @@ export class Session implements ChannelHost {
   private reserved = new Set<number>();
   private pendingOpen = new Map<number, { ch: Channel; resolve: (c: Channel) => void; reject: (e: unknown) => void }>();
   private pending: Pending[] = [];
+  private files = new Map<string, { resolve: (r: FileReply) => void; reject: (e: unknown) => void }>();
+  private fileSeq = 0;
   private listeners = new Set<CtrlListener>();
   private nextId = 0;
   private end: SessionEnd | null = null;
@@ -194,6 +201,8 @@ export class Session implements ChannelHost {
     }
     this.pendingOpen.clear();
     for (const p of this.pending.splice(0)) p.reject(SessionError.ended(e));
+    for (const f of this.files.values()) f.reject(SessionError.ended(e));
+    this.files.clear();
     this.resolveClosed(e);
   }
 
@@ -323,6 +332,18 @@ export class Session implements ChannelHost {
       this.pending.push({ kind: "credential_status", resolve, reject }),
     );
     this.sendCtrl({ type: "credential_status" });
+    return p;
+  }
+
+  /**
+   * `file_read`, resolved by the `file` reply with the same id. Send only when `features` has
+   * `file_read` (`Feature.FileRead`); the caller bounds the wait. A refusal resolves `ok: false`.
+   */
+  async readFile(path: string): Promise<FileReply> {
+    this.alive();
+    const id = `f${++this.fileSeq}`;
+    const p = new Promise<FileReply>((resolve, reject) => this.files.set(id, { resolve, reject }));
+    this.sendCtrl({ type: "file_read", id, path });
     return p;
   }
 
@@ -495,6 +516,20 @@ export class Session implements ChannelHost {
         const p = i >= 0 ? this.pending.splice(i, 1)[0] : undefined;
         if (p && p.kind === "credential_status") p.resolve({ kind: m.kind, configured: m.configured, scope: m.scope });
         else this.emit(m);
+        return;
+      }
+      case "file": {
+        const w = this.files.get(m.id);
+        if (!w) {
+          this.emit(m);
+          return;
+        }
+        this.files.delete(m.id);
+        w.resolve(
+          typeof m.content === "string"
+            ? { ok: true, path: m.path, content: m.content }
+            : { ok: false, path: m.path, code: m.code ?? "io", message: m.message ?? "could not read the file" },
+        );
         return;
       }
       case "credential_captured":

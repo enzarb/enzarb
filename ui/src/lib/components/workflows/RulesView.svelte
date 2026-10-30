@@ -50,7 +50,8 @@
 		dryRun,
 		saved,
 		advanced,
-		templates
+		templates,
+		highlight
 	}: {
 		file: WorkflowsFile;
 		api: WorkflowsApi;
@@ -59,6 +60,8 @@
 		advanced: (workflowId: string) => void;
 		/** Absent: the template actions are hidden. */
 		templates?: TemplatesApi;
+		/** Rule ids to mark as changed by a proposal. */
+		highlight?: Set<string>;
 	} = $props();
 
 	const initial = untrack(() => file);
@@ -229,7 +232,12 @@
 	{#if matchError}<Notice tone="warning">{matchError}</Notice>{/if}
 	<ul class="ez-rules" aria-label="Rules">
 		{#each doc.workflows as wf, i (wf.id)}
-			<li class="ez-rules__item" aria-label="Rule {wf.id}">
+			<li
+				class="ez-rules__item"
+				class:ez-rules__item--changed={highlight?.has(wf.id)}
+				aria-label="Rule {wf.id}"
+				data-changed={highlight?.has(wf.id) ? 'true' : undefined}
+			>
 				<p class="ez-rules__sentence">
 					<strong>When</strong>
 					{#each wf.on as ev, k (ev)}

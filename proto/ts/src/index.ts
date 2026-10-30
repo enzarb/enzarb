@@ -8,6 +8,7 @@ export {
   Session,
   type ConnectOptions,
   type CredentialInfo,
+  type FileReply,
   type WebSocketLike,
 } from "./session.js";
 
