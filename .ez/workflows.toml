@@ -53,7 +53,11 @@ next = "comment"
 [workflows.triage-issues.nodes.comment]
 type = "action"
 action = "comment"
-body = "{{ nodes.triage.result.summary }}\n\n---\nTo start implementing this, comment `/ez implement` on this issue or click Implement on the project's Tasks page in enzarb."
+body = """
+{{ nodes.triage.result.summary }}
+
+---
+To start implementing this, comment `/ez implement` on this issue or click Implement on the project's Tasks page in enzarb."""
 next = "done"
 
 [workflows.triage-issues.nodes.done]
@@ -109,7 +113,7 @@ status = "failed"
 [workflows.fix-failing-ci]
 description = "Fix failing CI runs"
 on = ["workflow_run.completed"]
-if = "event.workflow_run.conclusion == 'failure'"
+if = "event.workflow_run.conclusion == 'failure' and event.workflow_run.path | regex_match('^[.]github/workflows/')"
 start = "fix"
 
 [workflows.fix-failing-ci.nodes.fix]
