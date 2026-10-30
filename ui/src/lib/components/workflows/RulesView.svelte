@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import Button from '../form/Button.svelte';
+	import ListField from '../modes/ListField.svelte';
 	import Select from '../form/Select.svelte';
 	import TextField from '../form/TextField.svelte';
 	import SaveSteps from '../modes/SaveSteps.svelte';
@@ -148,17 +149,10 @@
 					{/if}
 				</p>
 				<div class="ez-cluster ez-cluster--end">
-					<TextField
+					<ListField
 						label="Events for {wf.id} (one per line)"
 						help="issues.labeled, push, or any event.action"
-						bind:value={
-							() => wf.on.join('\n'),
-							(v) =>
-								(wf.on = v
-									.split('\n')
-									.map((x) => x.trim())
-									.filter(Boolean))
-						}
+						bind:value={wf.on}
 					/>
 					<Select
 						label="Add event for {wf.id}"
