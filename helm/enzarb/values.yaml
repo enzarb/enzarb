@@ -145,7 +145,7 @@ ui:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-ui
-    tag: 0.87.0
+    tag: 0.88.0
     pullPolicy: ""
   # HTTP probes (/healthz liveness, /readyz readiness). false falls back to TCP probes.
   probes:
@@ -261,7 +261,7 @@ tracks:
   image:
     repository: ghcr.io/enzarb/enzarb-tracks
     # scripts/sync-components.sh pins the released enzarb-tracks tag here.
-    tag: 0.1.1
+    tag: 0.2.0
     pullPolicy: ""
   resources: {}
   extraEnv: []
