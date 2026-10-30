@@ -122,6 +122,9 @@ mode = "ci-fixer"
 instruction = "The CI run {{ event.workflow_run.name }} failed on {{ event.workflow_run.head_branch }}. See {{ event.workflow_run.html_url }}."
 push = true
 
+[workflows.fix-failing-ci.nodes.fix.result.summary]
+type = "string"
+
 [[workflows.fix-failing-ci.nodes.fix.next]]
 if = "git.pushed"
 to = "open_pr"
@@ -143,3 +146,4 @@ status = "done"
 [workflows.fix-failing-ci.nodes.failed]
 type = "end"
 status = "failed"
+reason = "the CI fixer made no push: {{ nodes.fix.result.summary if nodes.fix.result is defined and nodes.fix.result else 'no summary was submitted' }}"
