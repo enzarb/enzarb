@@ -62,8 +62,10 @@
 		file,
 		api,
 		dryRun,
-		saved
+		saved,
+		initialWorkflow
 	}: {
+		initialWorkflow?: string;
 		file: WorkflowsFile;
 		api: WorkflowsApi;
 		dryRun: DryRunApi;
@@ -80,7 +82,12 @@
 	let diagnostics = $state<Diagnostic[]>(initial.report);
 	let tab = $state(initial.file ? 'graph' : 'toml');
 	let text = $state(initial.text ?? '');
-	let wfIndex = $state(0);
+	let wfIndex = $state(
+		Math.max(
+			0,
+			Object.keys(initial.file?.workflows ?? {}).indexOf(untrack(() => initialWorkflow) ?? '')
+		)
+	);
 	let nodeIndex = $state<number | null>(null);
 	let newType = $state<NodeType>('agent');
 	let highlight = $state<{ workflow: string; visited: string[]; taken: string[] } | null>(null);
