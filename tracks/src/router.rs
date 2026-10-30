@@ -20,7 +20,7 @@ use sqlx::postgres::PgListener;
 use sqlx::{PgPool, Row};
 use tokio::sync::{Semaphore, watch};
 
-use crate::github::{RepoSource, Snapshot, SourceError};
+use crate::github::{RATE_LIMITED, RepoSource, Snapshot, SourceError};
 use crate::projects::{ProjectLookup, ProjectRef};
 
 /// Failed attempts (transient errors) before the event gets an `error` decision.
@@ -555,6 +555,12 @@ impl Router {
         let r = self.process_inner(id).await;
         self.inflight.lock().unwrap().remove(&id);
         if let Err(e) = r {
+            // A GitHub rate limit says nothing about the event: it stays undecided for the sweep
+            // however long the limit lasts, and is not counted towards giving up.
+            if e.contains(RATE_LIMITED) {
+                tracing::warn!(event_id = id, error = %e, "routing delayed by a GitHub rate limit");
+                return;
+            }
             let n = {
                 let mut a = self.attempts.lock().unwrap();
                 let n = a.entry(id).or_insert(0);

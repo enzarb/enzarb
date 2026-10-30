@@ -3,6 +3,7 @@ default_mode = "triage"
 [modes.triage]
 description = "Understand an issue"
 tools = ["Read", "Glob", "Grep"]
+mcp_tools = ["mcp__enzarb__submit_result"]
 
 [modes.implement]
 description = "Make the change"
