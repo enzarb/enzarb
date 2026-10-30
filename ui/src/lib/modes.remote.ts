@@ -3,6 +3,10 @@ import { command, query } from '$app/server';
 import * as v from 'valibot';
 import { ModesDocSchema, RepoArg, SaveModesSchema, Str, TEXT_MAX } from '#lib/modes-schema.ts';
 import type { ModeIssue, ModesDoc } from '#lib/modes-types.ts';
+import { projectRepoKeys } from '#lib/server/designer-files.ts';
+import { updateRequested } from '#lib/server/designer-sync.ts';
+import { loadWorkflowsWithModes } from '#lib/server/workflows-service.ts';
+import { getWorkflows } from '#lib/workflows.remote.ts';
 import { invalidateToken, token } from '#lib/server/github-app.ts';
 import { loadModes, saveModes, type ModesDeps } from '#lib/server/modes-service.ts';
 import { NameArg, ownedProject } from '#lib/server/owned-project.ts';
@@ -102,5 +106,15 @@ export const saveModesFile = command(SaveModesSchema, async ({ name, ...input })
 		...input,
 		doc: input.doc as ModesDoc | undefined
 	});
-	return r;
+	if (!r.ok) return r;
+	const { loaded, ...result } = r;
+	if (!r.unchanged) {
+		// Single flight: the modes page, and the workflows page, which embeds the modes.
+		const key = input.repo.toLowerCase();
+		const defaultKey = projectRepoKeys(project)[0];
+		await updateRequested(getModes, name, key, defaultKey, loaded);
+		const wf = await loadWorkflowsWithModes(d, user, project, input.repo, r.text);
+		await updateRequested(getWorkflows, name, key, defaultKey, wf.ok ? wf : undefined);
+	}
+	return result;
 });

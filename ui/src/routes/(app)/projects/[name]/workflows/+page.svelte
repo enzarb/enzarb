@@ -51,7 +51,9 @@
 				modesToml: modesToml === undefined ? r.modesToml : modesToml
 			}),
 		check: (text) => checkWorkflowsText({ name, text, modesToml: r.modesToml }),
-		save: (input) => saveWorkflowsFile({ name, repo: r.repo, baseSha: r.sha, ...input }),
+		save: (input) =>
+			// Single flight: the server sets this page's query from the commit, new sha included.
+			saveWorkflowsFile({ name, repo: r.repo, baseSha: r.sha, ...input }).updates(workflows),
 		reload: () => {
 			committed = null;
 			void workflows.refresh();
@@ -71,7 +73,11 @@
 			return bad ? { ok: false, message: bad.message } : { ok: true, text: res.text };
 		},
 		saveModes: async (input) => {
-			const res = await saveModesFile({ name, repo: r.repo, ...input });
+			// The modes feed the workflows query too (modesToml, modeIds), and the template reads.
+			const res = await saveModesFile({ name, repo: r.repo, ...input }).updates(
+				workflows,
+				getModes({ name, repo: r.repo })
+			);
 			return res.ok ? { ok: true } : { ok: false, message: res.message };
 		}
 	});
@@ -161,10 +167,7 @@
 						dryRun={dryRun(r)}
 						templates={templatesApi(r)}
 						advanced={(id) => setView(id)}
-						saved={(s) => {
-							committed = s;
-							if (!s.unchanged) void workflows.refresh();
-						}}
+						saved={(s) => (committed = s)}
 					/>
 					{#if chatOpen}
 						<RulesChat
@@ -174,10 +177,7 @@
 							templates={templatesApi(r)}
 							check={chatApi(r)}
 							highlighted={(ids) => (highlight = ids)}
-							saved={(s) => {
-								committed = s;
-								if (!s.unchanged) void workflows.refresh();
-							}}
+							saved={(s) => (committed = s)}
 						/>
 					{/if}
 				</div>
@@ -188,11 +188,7 @@
 					file={r}
 					api={api(r)}
 					dryRun={dryRun(r)}
-					saved={(s) => {
-						committed = s;
-						// Picks up the new blob sha; the page's own query, whatever repo key it uses.
-						if (!s.unchanged) void workflows.refresh();
-					}}
+					saved={(s) => (committed = s)}
 				/>
 			{/if}
 		{/key}

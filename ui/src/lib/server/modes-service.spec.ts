@@ -151,12 +151,16 @@ describe('saveModes', () => {
 			baseSha: 'sha1',
 			doc
 		});
-		expect(r).toEqual({
+		expect(r).toMatchObject({
 			ok: true,
 			unchanged: false,
 			sha: 'sha2',
 			commitUrl: 'https://github.com/c',
 			text: '[modes.plan]\nprompt = "x"\n'
+		});
+		// Set from the commit itself: the new blob sha and text, not a read back from GitHub.
+		expect(r).toMatchObject({
+			loaded: { ok: true, sha: 'sha2', text: '[modes.plan]\nprompt = "x"\n' }
 		});
 		expect(tracks.renderModes).toHaveBeenCalledWith(doc, '[modes.plan]\n');
 		const body = JSON.parse((put()![1] as RequestInit).body as string);

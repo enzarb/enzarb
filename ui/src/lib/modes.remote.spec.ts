@@ -12,6 +12,11 @@ const locals = vi.hoisted(() => ({ user: undefined as unknown }));
 const tracks = vi.hoisted(() => ({ client: null as unknown }));
 const check = vi.hoisted(() => vi.fn());
 const refresh = vi.hoisted(() => vi.fn(async () => {}));
+const sync = vi.hoisted(() => ({
+	list: [] as { arg: { name: string; repo?: string }; query: object; ignore: () => void }[],
+	save: vi.fn(),
+	loadWith: vi.fn()
+}));
 vi.mock('#lib/server/kube.ts', () => ({
 	getProjectStore: () => ({ get: storeGet }) as unknown as ProjectStore
 }));
@@ -22,7 +27,8 @@ vi.mock('$app/server', () => ({
 		Object.assign((...a: unknown[]) => Object.assign(handler(...a) as object, { refresh }), {
 			__: { type: 'query' }
 		}),
-	getRequestEvent: () => ({ locals })
+	getRequestEvent: () => ({ locals }),
+	requested: () => sync.list
 }));
 vi.mock('#lib/server/tracks.ts', async (orig) => ({
 	...(await orig<typeof import('#lib/server/tracks.ts')>()),
@@ -32,6 +38,18 @@ vi.mock('#lib/server/repo-access.ts', () => ({ getRepositoryAccess: () => ({ che
 vi.mock('#lib/server/github-app.ts', () => ({
 	token: vi.fn(async () => null),
 	invalidateToken: vi.fn()
+}));
+
+const real = await vi.importActual<typeof import('#lib/server/modes-service.ts')>(
+	'#lib/server/modes-service.ts'
+);
+vi.mock('#lib/server/modes-service.ts', async (orig) => ({
+	...(await orig<typeof import('#lib/server/modes-service.ts')>()),
+	saveModes: sync.save
+}));
+vi.mock('#lib/server/workflows-service.ts', async (orig) => ({
+	...(await orig<typeof import('#lib/server/workflows-service.ts')>()),
+	loadWorkflowsWithModes: sync.loadWith
 }));
 
 import { SaveModesSchema } from './modes-schema.ts';
@@ -52,11 +70,22 @@ const project = (owner: string): Project =>
 const run = (f: unknown, ...a: unknown[]) => (f as (...x: unknown[]) => Promise<unknown>)(...a);
 const doc = { defaultMode: '', modes: [] };
 
+const entry = (repo?: string, name = 'p') => {
+	const query = { set: vi.fn(), refresh: vi.fn(async () => {}) };
+	const e = { arg: { name, repo }, query, ignore: vi.fn() };
+	sync.list.push(e);
+	return e;
+};
+
 beforeEach(() => {
 	locals.user = { id: 1, githubId: 42, login: 'octo', name: null, avatarUrl: null };
 	storeGet.mockReset();
 	storeGet.mockResolvedValue(project('octo'));
 	check.mockReset();
+	sync.list.length = 0;
+	sync.save.mockReset();
+	sync.save.mockImplementation(real.saveModes);
+	sync.loadWith.mockReset();
 	tracks.client = {
 		validateModes: vi.fn(async () => []),
 		modesCatalog: vi.fn(),
@@ -105,6 +134,57 @@ describe('modes remote functions', () => {
 			await run(saveModesFile, { name: 'p', repo: 'github:acme/w', baseSha: null, doc })
 		).toMatchObject({ ok: false, code: 'forbidden' });
 		expect(check).toHaveBeenCalledWith('octo', 'github:acme/w');
+	});
+});
+
+describe('saving modes refreshes the page', () => {
+	const loaded = { ok: true, repo: 'github:acme/w', repos: ['github:acme/w'], sha: 'new' };
+	const wf = { ok: true, repo: 'github:acme/w', modesToml: 'new' };
+	const saveArgs = { name: 'p', repo: 'github:acme/w', baseSha: null, doc };
+	const committed = {
+		ok: true,
+		unchanged: false,
+		sha: 'new',
+		commitUrl: null,
+		text: 'new',
+		loaded
+	};
+
+	it('sets the modes query and the workflows query (which embeds the modes)', async () => {
+		sync.save.mockResolvedValue(committed);
+		sync.loadWith.mockResolvedValue(wf);
+		const e = entry(undefined);
+		const r = await run(saveModesFile, saveArgs);
+		expect(r).not.toHaveProperty('loaded');
+		// One command, both queries named by the client, so each is set once with its own value.
+		expect(e.query.set).toHaveBeenCalledWith(loaded);
+		expect(e.query.set).toHaveBeenCalledWith(wf);
+		expect(sync.loadWith).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.anything(),
+			expect.anything(),
+			'github:acme/w',
+			'new'
+		);
+	});
+
+	it('re-fetches the workflows when they cannot be assembled', async () => {
+		sync.save.mockResolvedValue(committed);
+		sync.loadWith.mockResolvedValue({ ok: false, code: 'github', message: 'x' });
+		const e = entry('github:acme/w');
+		await run(saveModesFile, saveArgs);
+		expect(e.query.refresh).toHaveBeenCalledTimes(1);
+	});
+
+	it('touches nothing after an unchanged or failed save', async () => {
+		const e = entry(undefined);
+		sync.save.mockResolvedValue({ ...committed, unchanged: true, loaded: undefined });
+		await run(saveModesFile, saveArgs);
+		sync.save.mockResolvedValue({ ok: false, code: 'conflict', message: 'x' });
+		await run(saveModesFile, saveArgs);
+		expect(sync.loadWith).not.toHaveBeenCalled();
+		expect(e.query.set).not.toHaveBeenCalled();
+		expect(e.query.refresh).not.toHaveBeenCalled();
 	});
 });
 

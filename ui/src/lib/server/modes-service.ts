@@ -4,12 +4,14 @@ import {
 	commitDesignerFile,
 	conflictOnOpen,
 	designerAccess,
+	type Access,
 	fail as failWith,
 	readDesignerFiles,
 	type Actor,
 	type DesignerDeps,
 	type Failure as DesignerFailure
 } from './designer-files.ts';
+import type { RepoFile } from './repo-files.ts';
 import { TracksError, type TracksClient } from './tracks.ts';
 
 export { projectRepoKeys, type Actor } from './designer-files.ts';
@@ -63,6 +65,17 @@ export async function loadModes(
 	const branch = a.repo.defaultBranch;
 	const cur = await readCurrent(deps, name, branch);
 	if (!cur.ok) return cur;
+	return assembleModes(deps, a, cur.file);
+}
+
+/** What the page shows, from file contents already in hand (no read of GitHub). */
+export async function assembleModes(
+	deps: ModesDeps,
+	a: Pick<Access, 'keys' | 'key'> & { repo: { defaultBranch: string } },
+	file: RepoFile | null
+): Promise<ModesLoad | Failure> {
+	const branch = a.repo.defaultBranch;
+	const cur = { file };
 	try {
 		const catalog = await deps.tracks.modesCatalog();
 		const base = {
@@ -107,7 +120,15 @@ export interface SaveInput {
 }
 
 export type SaveResult =
-	| { ok: true; unchanged: boolean; sha: string | null; commitUrl: string | null; text: string }
+	| {
+			ok: true;
+			unchanged: boolean;
+			sha: string | null;
+			commitUrl: string | null;
+			text: string;
+			/** What the page shows now, set from the commit's own content (only when committed). */
+			loaded?: ModesLoad;
+	  }
 	| Failure;
 
 export const DEFAULT_COMMIT_SUBJECT = 'chore(ez): update .ez/modes.toml from enzarb';
@@ -153,5 +174,8 @@ export async function saveModes(
 		subject,
 		designer: 'modes designer'
 	});
-	return r.ok ? { ...r, unchanged: false, text } : r;
+	if (!r.ok) return r;
+	// The committed content and blob sha are used as they are; the file is not read back.
+	const loaded = await assembleModes(deps, a, { text, sha: r.sha ?? '' });
+	return { ...r, unchanged: false, text, ...(loaded.ok ? { loaded } : {}) };
 }

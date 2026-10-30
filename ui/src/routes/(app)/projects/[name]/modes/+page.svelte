@@ -12,6 +12,7 @@
 		saveModesFile,
 		validateModes
 	} from '#lib/modes.remote.ts';
+	import { getWorkflows } from '#lib/workflows.remote.ts';
 
 	const name = $derived(page.params.name!);
 	let repo = $state<string | undefined>(undefined);
@@ -22,7 +23,12 @@
 		validate: (doc) => validateModes({ name, doc }),
 		parse: (text) => parseModesText({ name, text }),
 		render: (doc, old) => renderModesText({ name, doc, old }),
-		save: (input) => saveModesFile({ name, repo: r.repo, baseSha: r.sha, ...input }),
+		save: (input) =>
+			// Single flight: the server sets this page's query from the commit, new sha included.
+			saveModesFile({ name, repo: r.repo, baseSha: r.sha, ...input }).updates(
+				modes,
+				getWorkflows({ name, repo: r.repo })
+			),
 		reload: () => {
 			committed = null;
 			void modes.refresh();
@@ -83,15 +89,7 @@
 			</Notice>
 		{/if}
 		{#key `${r.repo}@${r.sha}`}
-			<ModesDesigner
-				file={r}
-				api={api(r)}
-				saved={(s) => {
-					committed = s;
-					// Picks up the new blob sha; the page's own query, whatever repo key it uses.
-					if (!s.unchanged) void modes.refresh();
-				}}
-			/>
+			<ModesDesigner file={r} api={api(r)} saved={(s) => (committed = s)} />
 		{/key}
 	</div>
 {/if}

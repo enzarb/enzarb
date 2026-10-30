@@ -12,6 +12,7 @@ import {
 	commitDesignerFile,
 	conflictOnOpen,
 	designerAccess,
+	type Access,
 	fail as failWith,
 	projectRepoKeys,
 	readDesignerFiles,
@@ -19,6 +20,7 @@ import {
 	type DesignerDeps,
 	type Failure as DesignerFailure
 } from './designer-files.ts';
+import type { RepoFile } from './repo-files.ts';
 import { MODES_PATH } from './modes-service.ts';
 import { TracksError, type TracksClient } from './tracks.ts';
 
@@ -73,7 +75,17 @@ export async function loadWorkflows(
 	const r = await readDesignerFiles(deps, a.name, branch, [WORKFLOWS_PATH, MODES_PATH]);
 	if (!r.ok) return r;
 	const [wf, modes] = r.files;
-	const modesToml = modes?.text ?? null;
+	return assembleWorkflows(deps, a, wf, modes?.text ?? null);
+}
+
+/** What the page shows, from file contents already in hand (no read of GitHub). */
+export async function assembleWorkflows(
+	deps: WorkflowsDeps,
+	a: Pick<Access, 'keys' | 'key'> & { repo: { defaultBranch: string } },
+	wf: RepoFile | null,
+	modesToml: string | null
+): Promise<WorkflowsLoad | Failure> {
+	const branch = a.repo.defaultBranch;
 	try {
 		const ids = await modeIds(deps.tracks, modesToml);
 		const base = {
@@ -93,6 +105,24 @@ export async function loadWorkflows(
 	}
 }
 
+/**
+ * The workflows page after a modes commit: the workflows file as it is on the branch, checked
+ * against the modes just committed. The modes are not read back, so a stale read cannot undo them.
+ */
+export async function loadWorkflowsWithModes(
+	deps: WorkflowsDeps,
+	actor: Actor,
+	project: Pick<ProjectView, 'repositories'>,
+	repo: string,
+	modesToml: string
+): Promise<WorkflowsLoad | Failure> {
+	const a = await designerAccess(deps, actor.login, project, repo);
+	if (!a.ok) return a;
+	const r = await readDesignerFiles(deps, a.name, a.repo.defaultBranch, [WORKFLOWS_PATH]);
+	if (!r.ok) return r;
+	return assembleWorkflows(deps, a, r.files[0], modesToml);
+}
+
 export interface SaveWorkflowsInput {
 	repo: string;
 	baseSha: string | null;
@@ -110,6 +140,8 @@ export type SaveWorkflowsResult =
 			commitUrl: string | null;
 			text: string;
 			report: Diagnostic[];
+			/** What the page shows now, set from the commit's own content (only when committed). */
+			loaded?: WorkflowsLoad;
 	  }
 	| Failure;
 
@@ -156,7 +188,10 @@ export async function saveWorkflows(
 		subject: input.message?.trim() || DEFAULT_WORKFLOWS_SUBJECT,
 		designer: 'workflow designer'
 	});
-	return c.ok ? { ...c, unchanged: false, text, report } : c;
+	if (!c.ok) return c;
+	// The committed content and blob sha are used as they are; the file is not read back.
+	const loaded = await assembleWorkflows(deps, a, { text, sha: c.sha ?? '' }, modesToml);
+	return { ...c, unchanged: false, text, report, ...(loaded.ok ? { loaded } : {}) };
 }
 
 export interface LoggedEvent {
