@@ -316,6 +316,7 @@ async fn forwards_frames_both_ways() {
         repo: None,
         resume: None,
         claude_token: None,
+        checkout: None,
     })
     .unwrap();
     ws.send(Message::Binary(open.to_bytes().unwrap()))
@@ -616,6 +617,7 @@ fn open_frame(channel: u32, kind: ChannelKind, repo: Option<&str>) -> Vec<u8> {
         repo: repo.map(Into::into),
         resume: None,
         claude_token: None,
+        checkout: None,
     })
     .unwrap()
     .to_bytes()
@@ -695,6 +697,7 @@ async fn acp_open_gets_owner_token_and_data_relays_both_ways() {
         repo: Some("https://github.com/a/b".into()),
         resume: None,
         claude_token: Some(enzarb_proto::Secret::new("browser-supplied")),
+        checkout: None,
     })
     .unwrap()
     .to_bytes()
@@ -710,6 +713,7 @@ async fn acp_open_gets_owner_token_and_data_relays_both_ways() {
             kind: ChannelKind::Acp,
             repo: Some(repo),
             claude_token: Some(t),
+            checkout: None,
             ..
         } => {
             assert_eq!(repo, "https://github.com/a/b");

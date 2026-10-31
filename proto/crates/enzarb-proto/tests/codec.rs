@@ -317,7 +317,7 @@ proptest! {
         for m in [
             Ctrl::StepSteer { run_id: run_id.clone(), text },
             Ctrl::Resize { channel: ch, cols, rows },
-            Ctrl::Open { channel: ch, kind: ChannelKind::Pty, cols, rows, command: Some(vec![run_id.clone()]), repo: None, resume: None, claude_token: None },
+            Ctrl::Open { channel: ch, kind: ChannelKind::Pty, cols, rows, command: Some(vec![run_id.clone()]), repo: None, resume: None, claude_token: None, checkout: None },
         ] {
             let f = Frame::ctrl(&m).unwrap();
             let back = Frame::from_bytes(f.to_bytes().unwrap()).unwrap();

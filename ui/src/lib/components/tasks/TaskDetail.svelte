@@ -125,6 +125,6 @@
 		{/if}
 	</div>
 	<div class="ez-tasks__chat">
-		{#if chat}{@render chat()}{:else}<TaskChatBar />{/if}
+		{#if chat}{@render chat()}{:else}<TaskChatBar {task} {run} />{/if}
 	</div>
 </article>

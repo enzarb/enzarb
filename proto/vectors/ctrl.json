@@ -102,6 +102,38 @@
     "name": "open_acp_repo_resume"
   },
   {
+    "hex": "010000000000000000aa7b2274797065223a226f70656e222c226368616e6e656c223a332c226b696e64223a22616370222c22636f6c73223a302c22726f7773223a302c227265706f223a2268747470733a2f2f6769746875622e636f6d2f656e7a6172622f656e7a617262222c22636865636b6f7574223a7b226272616e6368223a22657a2f7472696167652f72756e2d37222c2273746172745f726566223a22726566732f68656164732f6d61696e227d7d",
+    "message": {
+      "channel": 3,
+      "checkout": {
+        "branch": "ez/triage/run-7",
+        "start_ref": "refs/heads/main"
+      },
+      "cols": 0,
+      "kind": "acp",
+      "repo": "https://github.com/enzarb/enzarb",
+      "rows": 0,
+      "type": "open"
+    },
+    "name": "open_acp_checkout"
+  },
+  {
+    "hex": "0100000000000000009e7b2274797065223a226f70656e222c226368616e6e656c223a332c226b696e64223a22616370222c22636f6c73223a302c22726f7773223a302c227265706f223a2268747470733a2f2f6769746875622e636f6d2f656e7a6172622f656e7a6172622e676974222c22636865636b6f7574223a7b226272616e6368223a22656e7a6172622f69737375652d3132222c22637265617465223a747275657d7d",
+    "message": {
+      "channel": 3,
+      "checkout": {
+        "branch": "enzarb/issue-12",
+        "create": true
+      },
+      "cols": 0,
+      "kind": "acp",
+      "repo": "https://github.com/enzarb/enzarb.git",
+      "rows": 0,
+      "type": "open"
+    },
+    "name": "open_acp_checkout_create"
+  },
+  {
     "hex": "010000000000000000557b2274797065223a226f70656e222c226368616e6e656c223a322c226b696e64223a22707479222c22636f6c73223a3132302c22726f7773223a34302c22636f6d6d616e64223a5b2262617368222c222d6c225d7d",
     "message": {
       "channel": 2,

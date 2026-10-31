@@ -11,13 +11,16 @@
 		epoch,
 		onAnswer,
 		onAnswerQuestion = () => {},
-		hideContext
+		hideContext,
+		contextLabel = 'Context: current rules and file formats (show)'
 	}: {
 		items: ChatItem[];
 		epoch: number;
 		onAnswer: (id: string, choice: PermissionChoice, epoch: number) => void;
 		/** Splits a hidden context block off a user message; it is shown collapsed. */
 		hideContext?: (text: string) => { context: string; rest: string } | null;
+		/** The summary of the collapsed context block. */
+		contextLabel?: string;
 		onAnswerQuestion?: (id: string, answers: QuestionAnswer[] | null, epoch: number) => void;
 	} = $props();
 </script>
@@ -28,7 +31,7 @@
 			{@const split = item.kind === 'user' ? hideContext?.(item.text) : null}
 			{#if split}
 				<details class="ez-chat-context">
-					<summary>Context: current rules and file formats (show)</summary>
+					<summary>{contextLabel}</summary>
 					<pre>{split.context}</pre>
 				</details>
 				{#if split.rest}<ChatMessage kind="user" text={split.rest} />{/if}

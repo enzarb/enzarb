@@ -3,6 +3,24 @@
 
 import type { SecretLike } from "./secret.js";
 
+export type ChatCheckout = { 
+/**
+ * Branch name (at most 200 bytes of `[A-Za-z0-9._/-]`, no `..`, not starting with `-`, `/` or `.`).
+ */
+branch: string, 
+/**
+ * Where `branch` comes from when the sandbox has no saved commit, run checkout or `origin/<branch>`
+ * for it: `refs/heads/<name>` (resolved as `origin/<name>`) or `refs/pull/<n>/head` (only when the
+ * sandbox already has that ref; the chat has no network git).
+ */
+start_ref?: string | null, 
+/**
+ * `true`: `branch` is new and may start from `start_ref`, else the default branch. Otherwise the
+ * branch is expected to exist (a run branch, a pull request head) and the open fails with
+ * `open_error` `checkout_unavailable` when the sandbox cannot resolve it. Omitted: `false`.
+ */
+create?: boolean | null, };
+
 export type ClientKind = "ui" | "proxy" | "executor";
 
 export type CredentialKind = "claude_oauth";
@@ -33,7 +51,12 @@ resume?: string | null,
  * Optional per-user Claude token for this channel. Omitted when
  * absent; old peers ignore it.
  */
-claude_token?: SecretLike | null, } | { "type": "opened", channel: number, } | { "type": "open_error", channel: number, message: string, 
+claude_token?: SecretLike | null, 
+/**
+ * `acp` only: check this branch out in the chat's worktree. Send only after seeing
+ * `welcome.features` `chat_checkout`. Omitted when absent; old peers ignore it.
+ */
+checkout?: ChatCheckout | null, } | { "type": "opened", channel: number, } | { "type": "open_error", channel: number, message: string, 
 /**
  * Machine-readable reason (see [`open_error_code`]); unknown values
  * must be tolerated. Omitted when absent.

@@ -73,9 +73,17 @@ pub enum SandboxFrame {
     Captured { token: Option<Secret>, legacy: bool },
 }
 
+/// Longest `open.checkout.branch` / `.start_ref` (bytes) the proxy relays.
+const MAX_CHECKOUT_LEN: usize = 256;
+
 /// Features this proxy knows how to validate and relay. `welcome.features` to
 /// the browser is the sandbox's list intersected with this one.
-pub const PROXY_FEATURES: &[&str] = &[feature::ACP, feature::FILE_READ, feature::FILE_READ_CHAT];
+pub const PROXY_FEATURES: &[&str] = &[
+    feature::ACP,
+    feature::FILE_READ,
+    feature::FILE_READ_CHAT,
+    feature::CHAT_CHECKOUT,
+];
 
 /// The features to advertise to the browser.
 pub fn negotiated_features(sandbox: &[String]) -> Vec<String> {
@@ -139,6 +147,7 @@ impl Guard {
                     repo,
                     resume,
                     claude_token,
+                    checkout,
                     ..
                 } = &ctrl
                 {
@@ -153,6 +162,18 @@ impl Guard {
                             channel,
                             open_error_code::INVALID_REQUEST,
                             "repo or resume too long",
+                        );
+                    }
+                    if checkout.as_ref().is_some_and(|c| {
+                        c.branch.len() > MAX_CHECKOUT_LEN
+                            || c.start_ref
+                                .as_ref()
+                                .is_some_and(|r| r.len() > MAX_CHECKOUT_LEN)
+                    }) {
+                        return open_error(
+                            channel,
+                            open_error_code::INVALID_REQUEST,
+                            "checkout too long",
                         );
                     }
                     if self.acp_channel == Some(channel) {
@@ -336,6 +357,7 @@ mod tests {
             repo: None,
             resume: None,
             claude_token: None,
+            checkout: None,
         };
         assert!(check(&ctrl(&open)).is_ok());
         let resize = Ctrl::Resize {
@@ -472,6 +494,7 @@ mod tests {
             repo,
             resume,
             claude_token: None,
+            checkout: None,
         })
     }
 
@@ -646,6 +669,7 @@ mod tests {
             repo: None,
             resume: None,
             claude_token: Some(Secret::new("browser-token")),
+            checkout: None,
         });
         let Ok(Verdict::OpenAcp { channel, open }) = g.check_browser_message(&m) else {
             panic!()
@@ -655,6 +679,7 @@ mod tests {
             *open,
             Ctrl::Open {
                 claude_token: None,
+                checkout: None,
                 ..
             }
         ));
@@ -673,6 +698,7 @@ mod tests {
             repo: None,
             resume: None,
             claude_token: Some(Secret::new("x")),
+            checkout: None,
         });
         let v = g.check_browser_message(&p).unwrap();
         assert_eq!(code_of(v), (7, Some("invalid_request".into())));

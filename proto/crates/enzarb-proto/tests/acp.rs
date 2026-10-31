@@ -61,6 +61,7 @@ fn new_optional_fields_are_omitted_when_absent() {
         repo: None,
         resume: None,
         claude_token: None,
+        checkout: None,
     });
     assert_eq!(
         v,
@@ -134,6 +135,7 @@ fn acp_open_round_trips() {
         repo: Some("https://github.com/enzarb/x".into()),
         resume: Some("sess_1".into()),
         claude_token: None,
+        checkout: None,
     };
     let back = Frame::from_bytes(Frame::ctrl(&m).unwrap().to_bytes().unwrap())
         .unwrap()

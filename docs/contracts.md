@@ -143,8 +143,8 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 | Message | Direction | Fields |
 |---|---|---|
 | `hello` | client → server | `versions: [1]`, `client: "ui" \| "proxy" \| "executor"` |
-| `welcome` | server → client | `version`, `features?: [string]` (optional; `"acp"` when chat is enabled, `"steps"`, `"step_start_ref"` (`StepWorkspace.start_ref`), `"ez_steps"` (agent steps may carry `mode` and `ez`, ADR-0029; implies `"steps"`), `"stats"`, `"file_read"`, `"file_read_chat"`; absent means none) |
-| `open` | client → server | `channel`, `kind: "pty" \| "acp"`, `cols`, `rows`, `command?: [..]`, `repo?`, `resume?`, `claude_token?` (acp only; set by the proxy) (see below) |
+| `welcome` | server → client | `version`, `features?: [string]` (optional; `"acp"` when chat is enabled, `"steps"`, `"step_start_ref"` (`StepWorkspace.start_ref`), `"ez_steps"` (agent steps may carry `mode` and `ez`, ADR-0029; implies `"steps"`), `"stats"`, `"file_read"`, `"file_read_chat"`, `"chat_checkout"` (`open.checkout`); absent means none) |
+| `open` | client → server | `channel`, `kind: "pty" \| "acp"`, `cols`, `rows`, `command?: [..]`, `repo?`, `resume?`, `claude_token?` (acp only; set by the proxy), `checkout?: {branch, start_ref?, create?}` (acp only, gated by `"chat_checkout"`) (see below) |
 | `opened` / `open_error` | server → client | `channel` / `channel, message, code?` |
 | `resize` | client → server | `channel`, `cols`, `rows` |
 | `step_start` (ez fields gated by `ez_steps`), `step_accepted`, `step_status`, `step_state`, `step_steer`, `step_stop`, `step_resume`, `session_event`, `step_finished` | both | Generic step/session primitives, gated by `welcome.features` `steps`; fields in `proto/docs/protocol.md`. No orchestrator drives them at the moment ([ADR-0027](adr/0027-workflow-clean-slate.md)); the proxy does not relay them to browsers |
@@ -164,10 +164,10 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 - **Logging:** Debug and tracing output of the `open` frame and of `claude_credential_get` results (proxy) redacts `claude_token`, as `RunStart` debug output does. `credential_captured.token` is never logged either.
 
 **`acp` channels (ADR-0014; additive, protocol version stays 1):**
-- `kind: "acp"` opens a byte stream of newline-delimited JSON-RPC (ACP) in DATA_BIN; messages may span frames. `cols`/`rows` are ignored (clients send `0`). `repo` (optional) names a Project repo URL that must already be cloned; `resume` (optional) is the ACP session id, informational only.
+- `kind: "acp"` opens a byte stream of newline-delimited JSON-RPC (ACP) in DATA_BIN; messages may span frames. `cols`/`rows` are ignored (clients send `0`). `repo` (optional) names a Project repo URL that must already be cloned; `resume` (optional) is the ACP session id, informational only. `checkout` (optional, only after `"chat_checkout"`) puts the chat's worktree on that branch: a run's `ez/<workflow>/<run>` (from the run's own unpushed checkout, else `origin`), a same-repo PR's head branch, or, with `create: true`, a new branch from the default branch for an issue. An existing branch the sandbox cannot resolve fails with `open_error` `checkout_unavailable` (`branch <name> is not in the sandbox`) instead of opening on another branch. Resume restores the chat's last saved commit onto the branch. The chat holds no push token, so its commits stay in the sandbox (kept as `enzarb/chat-<id>`) until a run pushes them (`proto/docs/protocol.md`).
 - **`welcome.features`:** the sandbox sends `["acp"]` when `ENZARB_MAX_CHATS > 0`. The proxy answers the browser's `hello` itself and forwards the sandbox's features intersected with those it can guard. Decoders ignore unknown fields.
 - **Compatibility rule:** a sender must not send `open{kind:"acp"}` before seeing `"acp"` in `welcome.features`. A proxy that cannot decode a frame closes the socket with 1008, so an `acp` open to an old proxy would kill the connection.
-- **`open_error.code`** (optional): `chat_disabled`, `chat_limit`, `no_credential`, `repo_not_cloned`, `unsupported_kind`. Clients must tolerate other values. An unknown `kind` decodes (Rust `ChannelKind::Unknown`) and yields `unsupported_kind`.
+- **`open_error.code`** (optional): `chat_disabled`, `chat_limit`, `no_credential`, `repo_not_cloned`, `checkout_unavailable`, `unsupported_kind`. Clients must tolerate other values. An unknown `kind` decodes (Rust `ChannelKind::Unknown`) and yields `unsupported_kind`.
 - **CLOSE reasons** on an `acp` channel: `idle`, `superseded`, `shutdown`, `limit`, `exit:<n>`, `signal:<n>`. Clients must tolerate other text.
 
 - **Wire details** (`proto/docs/protocol.md` and the `enzarb_proto::Ctrl` enum are the source of truth):

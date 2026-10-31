@@ -117,6 +117,23 @@ describe("per-user claude token vectors", () => {
   });
 });
 
+describe("open.checkout", () => {
+  const v = load("ctrl.json").find((x) => x.name === "open_acp_checkout")!;
+  it("carries branch and start_ref and decodes", () => {
+    expect(v.message.checkout).toEqual({ branch: "ez/triage/run-7", start_ref: "refs/heads/main" });
+    expect(parseCtrl(decodeFrame(fromHex(v.hex)))).toMatchObject({ type: "open", checkout: { branch: "ez/triage/run-7" } });
+  });
+  it("a new branch is flagged create", () => {
+    const c = load("ctrl.json").find((x) => x.name === "open_acp_checkout_create")!;
+    expect(c.message.checkout).toEqual({ branch: "enzarb/issue-12", create: true });
+    expect(parseCtrl(decodeFrame(fromHex(c.hex)))).toMatchObject({ checkout: { create: true } });
+  });
+  it("an old decoder (checkout stripped) still reads the open", () => {
+    const { checkout: _c, ...old } = v.message as Record<string, unknown>;
+    expect(asCtrl(old)).toMatchObject(old);
+  });
+});
+
 describe("ctrl_compat.json", () => {
   const vectors = load("ctrl_compat.json");
   it("has vectors", () => expect(vectors.length).toBeGreaterThan(0));

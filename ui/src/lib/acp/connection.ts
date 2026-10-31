@@ -1,4 +1,11 @@
-import { CloseReason, Feature, MAX_RESUME_LEN, OpenErrorCode, type FileReply } from '@enzarb/proto';
+import {
+	CloseReason,
+	Feature,
+	MAX_RESUME_LEN,
+	OpenErrorCode,
+	type ChatCheckout,
+	type FileReply
+} from '@enzarb/proto';
 import {
 	completeChatStep,
 	failChatStep,
@@ -52,6 +59,10 @@ const CANCELLED_QUESTION: QuestionResult = { answers: [], cancelled: true };
 export const BACKOFF_BASE_MS = 1_000;
 export const BACKOFF_MAX_MS = 30_000;
 export const MAX_RETRIES = 6;
+/** Shown when a chat on a given branch is wanted and the sandbox cannot do that. */
+export const NEEDS_UPDATE =
+	"This sandbox needs an update before it can chat on a task's branch. It becomes available once the sandbox has restarted on a newer version.";
+
 /** The sandbox needs up to ~20 s to tear down the old agent before `opened`. */
 export const OPEN_TIMEOUT_MS = 30_000;
 
@@ -66,7 +77,7 @@ export interface AcpChannel extends AcpStreams {
 /** The slice of proto's `Session` the connection uses. */
 export interface AcpSession {
 	features: ReadonlySet<string>;
-	openAcp(opts?: { repo?: string; resume?: string }): Promise<AcpChannel>;
+	openAcp(opts?: { repo?: string; resume?: string; checkout?: ChatCheckout }): Promise<AcpChannel>;
 	closed?: Promise<unknown>;
 	/** proto's `readFile` (`file_read`); present on a real mux session, check `features` first. */
 	readFile?(path: string): Promise<FileReply>;
@@ -78,6 +89,8 @@ export interface ConnectionDeps {
 	/** Fetch a token, open the websocket and handshake; call `report` as each step finishes. */
 	connect(report: ConnectReport): Promise<AcpSession>;
 	repo?: string;
+	/** The branch the chat works on (`open.checkout`); needs the sandbox's `chat_checkout` feature. */
+	checkout?: ChatCheckout;
 	setTimeout(fn: () => void, ms: number): unknown;
 	clearTimeout(handle: unknown): void;
 	random(): number;
@@ -150,6 +163,11 @@ const OPEN_FAILURES: Record<string, Failure> = {
 	[OpenErrorCode.RepoNotCloned]: {
 		message: 'The repository is not cloned in the sandbox yet',
 		action: 'retry'
+	},
+	[OpenErrorCode.CheckoutUnavailable]: {
+		message:
+			"This task's branch is not in the sandbox yet. It appears once a run has created or pushed it.",
+		action: null
 	},
 	[OpenErrorCode.UnsupportedKind]: { message: 'This sandbox does not support chat', action: null },
 	[OpenErrorCode.InvalidRequest]: { message: 'The chat request was invalid', action: null }
@@ -411,8 +429,9 @@ export function createChatConnection(
 		sess: AcpSession,
 		resume: string | undefined
 	): Promise<AcpChannel | 'timeout'> {
-		const opts: { repo?: string; resume?: string } = {};
+		const opts: { repo?: string; resume?: string; checkout?: ChatCheckout } = {};
 		if (deps.repo) opts.repo = deps.repo;
+		if (deps.checkout) opts.checkout = deps.checkout;
 		if (resume) opts.resume = resume;
 		const opening = sess.openAcp(opts);
 		let timer: unknown;
@@ -484,6 +503,11 @@ export function createChatConnection(
 
 		if (!session.features.has(Feature.Acp)) {
 			fail('agent', 'Chat is not available', { phase: 'unavailable', action: null });
+			return;
+		}
+		if (deps.checkout && !session.features.has(Feature.ChatCheckout)) {
+			// Never fall back to a fresh branch: the user would be chatting about the wrong code.
+			fail('agent', NEEDS_UPDATE, { phase: 'unavailable', action: null });
 			return;
 		}
 
