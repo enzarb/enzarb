@@ -45,7 +45,12 @@ const github = (
 ) => ({
 	openSubjects: vi.fn(async () => ({ open: open ? new Set(open) : null })),
 	pulls: vi.fn(async () => ({ items: pulls as never[], note })),
-	issues: vi.fn(async () => ({ items: issues as never[] }))
+	issues: vi.fn(async () => ({ items: issues as never[] })),
+	pull: vi.fn(async () => ({ pull: null })),
+	pullFiles: vi.fn(async () => ({ items: [] })),
+	checkRuns: vi.fn(async () => ({ items: [] })),
+	commitStatus: vi.fn(async () => ({ state: 'none' as const })),
+	markedComments: vi.fn(async () => ({ items: [] }))
 });
 
 describe('projectTasks', () => {

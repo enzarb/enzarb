@@ -70,17 +70,52 @@ on = ["issues.labeled", "issue_comment.created", "manual"]
 if = "(event.name == 'issues' and event.action == 'labeled' and event.label.name == 'ez') or (event.name == 'issue_comment' and event.issue.state == 'open' and event.issue.pull_request is undefined and event.comment.user.type != 'Bot' and event.comment.author_association in ['OWNER', 'MEMBER', 'COLLABORATOR'] and event.comment.body | regex_match('(?im)^[[:space:]]*@enzarb[[:space:]]+implement([[:space:]]|$)')) or event.name == 'manual'"
 start = "plan"
 
+[workflows.implement-labeled-issues.vars]
+approve_plan = true
+
 [workflows.implement-labeled-issues.nodes.plan]
 type = "agent"
 mode = "planner"
 instruction = """
 Issue #{{ event.issue.number }}: {{ event.issue.title }}
 
-{{ event.issue.body }}"""
-next = "implement"
+{{ event.issue.body }}{% if nodes.approve_plan is defined %}
+
+Your previous plan:
+
+{{ nodes.plan.result.plan }}
+
+Revise the plan using this feedback:
+
+{% if event.name == 'manual' %}{{ event.text }}{% else %}{{ event.comment.body }}{% endif %}{% endif %}"""
+next = [{ if = "vars.approve_plan", to = "post_plan" }, { to = "implement" }]
 
 [workflows.implement-labeled-issues.nodes.plan.result.plan]
 type = "string"
+
+[workflows.implement-labeled-issues.nodes.post_plan]
+type = "action"
+action = "comment"
+body = """
+## Proposed plan
+
+{{ nodes.plan.result.plan }}
+
+---
+To go ahead, comment `@enzarb approve` (at the start of a line) or click Approve on the project's Tasks page in enzarb. To change the plan, comment `@enzarb revise <what to change>` or send changes from enzarb."""
+next = "approve_plan"
+
+[workflows.implement-labeled-issues.nodes.approve_plan]
+type = "wait"
+on = ["manual", "issue_comment.created"]
+if = "event.issue.number == subject.number and ((event.name == 'manual' and event.action in ['approve', 'revise']) or (event.name == 'issue_comment' and event.action == 'created' and event.comment.user.type != 'Bot' and event.comment.author_association in ['OWNER', 'MEMBER', 'COLLABORATOR'] and event.comment.body | regex_match('(?im)^[[:space:]]*@enzarb[[:space:]]+(approve|revise)([[:space:]]|$)')))"
+timeout = "14d"
+next = [{ if = "timed_out", to = "plan_expired" }, { if = "(event.name == 'manual' and event.action == 'revise') or (event.name == 'issue_comment' and event.comment.body | regex_match('(?im)^[[:space:]]*@enzarb[[:space:]]+revise([[:space:]]|$)'))", to = "plan" }, { to = "implement" }]
+
+[workflows.implement-labeled-issues.nodes.plan_expired]
+type = "end"
+status = "cancelled"
+reason = "plan not approved in time"
 
 [workflows.implement-labeled-issues.nodes.implement]
 type = "agent"

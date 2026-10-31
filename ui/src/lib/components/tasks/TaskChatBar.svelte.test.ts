@@ -12,6 +12,7 @@ vi.mock('#lib/chat.remote.ts', () => ({ chatConnection }));
 
 const review: Task = {
 	kind: 'review',
+	openedBy: null,
 	key: 'pr:acme/app#50',
 	project: 'alpha',
 	repo: 'acme/app',

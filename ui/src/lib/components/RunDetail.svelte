@@ -4,6 +4,8 @@
 	import Button from './form/Button.svelte';
 	import SubjectLink from './SubjectLink.svelte';
 	import RunNodes from './RunNodes.svelte';
+	import PlanApproval from './tasks/PlanApproval.svelte';
+	import type { ActionOutcome } from '#lib/tasks.ts';
 	import ConfirmDialog from './ui/ConfirmDialog.svelte';
 	import KeyValueList from './ui/KeyValueList.svelte';
 	import Section from './ui/Section.svelte';
@@ -11,11 +13,17 @@
 	/** One run: its facts, a Stop button while it is live, and each node visit with what ran. */
 	let {
 		run,
-		stop
+		stop,
+		plan = null,
+		answer
 	}: {
 		run: RunDetail;
 		/** Asks the executor to stop the run; the page refreshes itself from the server. */
 		stop: () => Promise<void>;
+		/** The rendered plan when the run waits at a plan approval. */
+		plan?: { html: string } | null;
+		/** Approve or revise that plan. */
+		answer?: (action: 'approve' | 'revise', text?: string) => Promise<ActionOutcome>;
 	} = $props();
 
 	let confirming = $state(false);
@@ -53,6 +61,10 @@
 		]}
 	/>
 </Section>
+
+{#if plan && answer}
+	<PlanApproval html={plan.html} {answer} />
+{/if}
 
 <RunNodes {run} />
 

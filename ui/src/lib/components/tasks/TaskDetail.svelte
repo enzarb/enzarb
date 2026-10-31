@@ -29,6 +29,7 @@
 		run,
 		context,
 		busy = false,
+		plan = null,
 		act,
 		sections,
 		chat
@@ -38,8 +39,10 @@
 		run?: RunDetail | null;
 		context?: RepoContext;
 		busy?: boolean;
+		/** True while the run waits at a plan approval: the plan section carries the actions. */
+		plan?: boolean | null;
 		act: (id: DefaultActionId) => void;
-		/** Extra sections under the built-in content (plan approval, review). */
+		/** Extra sections above the built-in content (plan approval, review). */
 		sections?: Snippet;
 		/** Replaces the chat bar. */
 		chat?: Snippet;
@@ -60,18 +63,20 @@
 				{/if}
 				{#if (task.kind === 'wait' || task.kind === 'failed') && task.runUrl}
 					<RunLink workflow={task.workflow} id={task.runId} href={task.runUrl} />
-				{:else if task.kind === 'review' && task.runUrl}
-					<a class="ez-run-link" href={task.runUrl}>Run that opened it</a>
+				{:else if task.kind === 'review' && task.openedBy}
+					<span class="ez-muted">Opened by</span>
+					<RunLink
+						workflow={task.openedBy.workflow}
+						id={task.openedBy.id}
+						href={task.runUrl ??
+							`/projects/${encodeURIComponent(task.project)}/runs/${task.openedBy.id}`}
+					/>
 				{/if}
 			</p>
 			<div class="ez-tasks__actions">
-				{#if primary.id === 'diff'}
-					<LinkButton
-						variant="primary"
-						href="{task.githubUrl ?? `https://github.com/${task.repo}/pull/${task.number}`}/files"
-						target="_blank"
-						rel="noopener noreferrer">{primary.label}</LinkButton
-					>
+				{#if plan}
+					<!-- Approve and Revise are in the plan section below; Stop stays here. -->
+					<Button loading={busy} onclick={() => act('stop')}>Stop for now</Button>
 				{:else}
 					<Button variant="primary" loading={busy} onclick={() => act(primary.id)}
 						>{primary.label}</Button
@@ -82,6 +87,8 @@
 				{/if}
 			</div>
 		</header>
+
+		{@render sections?.()}
 
 		{#if task.kind === 'triaged'}
 			<Section title="Issue">
@@ -98,13 +105,9 @@
 				{/if}
 			</Section>
 		{:else if task.kind === 'review'}
-			<Section title="Pull request">
-				<p><code>{task.branch}</code> · {task.draft ? 'draft' : 'ready for review'}</p>
-				<p>
-					<SubjectLink repo={task.repo} number={task.number} url={task.githubUrl} {context} />
-					— {task.title}
-				</p>
-			</Section>
+			<p class="ez-muted">
+				<code>{task.branch}</code> · {task.draft ? 'draft' : 'ready for review'}
+			</p>
 		{:else if run === undefined}
 			<Skeleton label="Loading run" rows={2} />
 		{:else if run === null}
@@ -120,7 +123,6 @@
 			{#if run.reason}<p class="ez-noderuns__error" role="alert">{run.reason}</p>{/if}
 			<RunNodes {run} />
 		{/if}
-		{@render sections?.()}
 	</div>
 	<div class="ez-tasks__chat">
 		{#if chat}{@render chat()}{:else}<TaskChatBar {task} {run} />{/if}

@@ -3611,3 +3611,100 @@ textarea.ez-control {
 		max-height: 20rem;
 	}
 }
+
+// Sanitised markdown from the server (plans, review notes).
+.ez-md {
+	overflow-wrap: anywhere;
+
+	> :first-child {
+		margin-top: 0;
+	}
+
+	pre {
+		overflow-x: auto;
+		padding: var(--space-2, 0.5rem);
+		background: var(--surface-2, rgb(128 128 128 / 0.12));
+	}
+}
+
+.ez-tasks__revise {
+	display: grid;
+	gap: var(--space-2, 0.5rem);
+	justify-items: start;
+	margin-top: var(--space-2, 0.5rem);
+}
+
+// The inline diff of a pull request.
+.ez-diff {
+	margin: var(--space-2, 0.5rem) 0;
+	border: 1px solid var(--border, rgb(128 128 128 / 0.4));
+	border-radius: 6px;
+	overflow: hidden;
+
+	&__head {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-2, 0.5rem);
+		padding: var(--space-2, 0.5rem);
+		cursor: pointer;
+		background: var(--surface-2, rgb(128 128 128 / 0.12));
+		overflow-wrap: anywhere;
+	}
+
+	&__add {
+		color: var(--ez-success-fg);
+	}
+
+	&__del,
+	&__bad {
+		color: var(--ez-danger-fg);
+	}
+
+	&__skipped {
+		margin: 0;
+		padding: var(--space-2, 0.5rem);
+	}
+
+	&__table {
+		display: block;
+		overflow-x: auto;
+		border-collapse: collapse;
+		font:
+			0.8rem/1.4 ui-monospace,
+			monospace;
+	}
+
+	&__no {
+		min-width: 3rem;
+		padding: 0 var(--space-2, 0.5rem);
+		text-align: right;
+		opacity: 0.6;
+		user-select: none;
+	}
+
+	&__text {
+		white-space: pre;
+		padding-right: var(--space-3, 0.75rem);
+	}
+
+	&__sign {
+		display: inline-block;
+		width: 1.2ch;
+		user-select: none;
+	}
+
+	&__line--add {
+		background: var(--ez-success-bg);
+	}
+
+	&__line--del {
+		background: var(--ez-danger-bg);
+	}
+
+	&__line--hunk,
+	&__line--note {
+		opacity: 0.75;
+		background: var(--surface-2, rgb(128 128 128 / 0.12));
+	}
+}

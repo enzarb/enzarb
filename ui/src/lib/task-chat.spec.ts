@@ -34,6 +34,7 @@ const failed: Task = {
 const review: Task = {
 	...base,
 	kind: 'review',
+	openedBy: null,
 	key: 'pr:acme/app#50',
 	number: 50,
 	title: 'Add retries',
