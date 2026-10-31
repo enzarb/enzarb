@@ -36,7 +36,9 @@ for (const path of [
 	`/projects/${E2E_PROJECT}/events`,
 	`/projects/${E2E_PROJECT}/runs`,
 	`/projects/${E2E_PROJECT}/tasks`,
+	`/projects/${E2E_PROJECT}/tasks?task=issue%3Ae2e-org%2Fapp%239`,
 	'/tasks',
+	'/tasks?task=nope',
 	`/projects/${E2E_PROJECT}/modes`,
 	`/projects/${E2E_PROJECT}/workflows`
 ]) {

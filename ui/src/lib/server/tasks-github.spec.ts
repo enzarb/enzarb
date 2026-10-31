@@ -76,6 +76,19 @@ describe('tasks GitHub reads', () => {
 		expect((f.mock.calls[0] as unknown as [string])[0]).toContain('labels=triage');
 	});
 
+	it('cuts long issue bodies and says so', async () => {
+		const { reads } = setup(async () =>
+			json([
+				{ number: 1, title: 'a', body: 'x'.repeat(5000), html_url: 'u', updated_at: 't' },
+				{ number: 2, title: 'b', body: 'short', html_url: 'u', updated_at: 't' }
+			])
+		);
+		const [long, short] = (await reads.issues('o/r', 'triage')).items;
+		expect(long.body).toHaveLength(4000);
+		expect(long.bodyTruncated).toBe(true);
+		expect(short.bodyTruncated).toBe(false);
+	});
+
 	it('backs off after a rate limit and serves the last good answer', async () => {
 		let limited = false;
 		const { reads, f, advance } = setup(async () =>

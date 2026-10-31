@@ -1,5 +1,7 @@
 <script lang="ts">
+	import { repoContext } from '#lib/github-links.ts';
 	import { runTone, type RunSummary } from '#lib/runs.ts';
+	import SubjectLink from './SubjectLink.svelte';
 	import Button from './form/Button.svelte';
 	import Badge from './ui/Badge.svelte';
 	import EmptyState from './ui/EmptyState.svelte';
@@ -21,6 +23,7 @@
 		failed?: boolean;
 		retry: () => void;
 	} = $props();
+	const ctx = $derived(repoContext((runs ?? []).map((r) => r.repo)));
 </script>
 
 {#if failed}
@@ -40,17 +43,26 @@
 		<ul class="ez-runs" data-testid="run-list">
 			{#each runs as r (r.id)}
 				{@const t = runTone(r.status)}
-				<li>
-					<a href="{base}/{r.id}" class="ez-runs__row">
+				<li class="ez-runs__row">
+					<a href="{base}/{r.id}" class="ez-runs__link">
 						<strong>{r.workflow}</strong>
 						<Badge tone={t.tone} hollow={t.hollow}>{r.status}</Badge>
 						{#if r.test}<Badge tone="info" plain>Test</Badge>{/if}
-						<span class="ez-muted">{r.repo}{r.subject ? `#${r.subject.number}` : ''}</span>
-						{#if r.reason}<span class="ez-muted">{r.reason}</span>{/if}
-						<time class="ez-muted" datetime={r.createdAt}
-							>{new Date(r.createdAt).toLocaleString()}</time
-						>
 					</a>
+					{#if r.subject}
+						<SubjectLink
+							repo={r.repo}
+							number={r.subject.number}
+							url={r.subject.url}
+							context={ctx}
+						/>
+					{:else}
+						<span class="ez-muted">{r.repo}</span>
+					{/if}
+					{#if r.reason}<span class="ez-muted">{r.reason}</span>{/if}
+					<time class="ez-muted" datetime={r.createdAt}
+						>{new Date(r.createdAt).toLocaleString()}</time
+					>
 				</li>
 			{/each}
 		</ul>

@@ -11,7 +11,10 @@ export const TRIAGE_LABEL = 'triage';
 export const RUN_BRANCH_PREFIX = 'ez/';
 
 interface Base {
-	/** Stable key within one list. */
+	/**
+	 * Stable key within one list, and the `?task=` value in the URL: `run:<id>` (waiting or failed
+	 * run), `pr:<owner/repo>#<n>`, `issue:<owner/repo>#<n>`.
+	 */
 	key: string;
 	project: string;
 	/** `owner/repo` */
@@ -56,6 +59,10 @@ export interface ReviewTask extends Base {
 /** An issue labelled `triage` that no implement run has started on. */
 export interface TriagedTask extends Base {
 	kind: 'triaged';
+	/** The issue text from GitHub (cached server-side). */
+	body?: string;
+	/** True when the body was cut short. */
+	bodyTruncated?: boolean;
 }
 
 export type Task = WaitTask | FailedTask | ReviewTask | TriagedTask;
@@ -82,4 +89,60 @@ export function groupTasks(tasks: Task[]): { kind: TaskKind; label: string; task
 		label: KIND_LABELS[kind],
 		tasks: tasks.filter((t) => t.kind === kind)
 	})).filter((g) => g.tasks.length > 0);
+}
+
+/** What an action button answers: the sentence to show and the run it started or stopped. */
+export interface ActionOutcome {
+	ok: boolean;
+	message: string;
+	runId?: string | null;
+}
+
+export type DefaultActionId = 'implement' | 'retry' | 'stop' | 'diff';
+
+/** The primary button of a task's detail. */
+export function defaultAction(t: Task): { id: DefaultActionId; label: string } {
+	switch (t.kind) {
+		case 'triaged':
+			return { id: 'implement', label: 'Implement' };
+		case 'failed':
+			return { id: 'retry', label: 'Retry' };
+		case 'wait':
+			return { id: 'stop', label: 'Stop for now' };
+		case 'review':
+			return { id: 'diff', label: 'Open diff' };
+	}
+}
+
+/** Short status for a sidebar entry. */
+export function shortStatus(t: Task): string {
+	switch (t.kind) {
+		case 'wait':
+			return 'waiting';
+		case 'failed':
+			return t.reason ? `failed: ${t.reason}` : 'failed';
+		case 'review':
+			return t.draft ? 'draft PR' : 'open PR';
+		case 'triaged':
+			return 'triaged';
+	}
+}
+
+/** What a sidebar entry is, in a word. */
+export const KIND_NAMES: Record<TaskKind, string> = {
+	wait: 'Run',
+	failed: 'Run',
+	review: 'Pull request',
+	triaged: 'Issue'
+};
+
+/** The run behind the task with this key (`run:<id>`), for loading its nodes. */
+export function runOfTask(
+	list: TaskList | undefined,
+	key: string | null
+): { project: string; id: string } | null {
+	const t = list?.tasks.find((x) => x.key === key);
+	return t && (t.kind === 'wait' || t.kind === 'failed')
+		? { project: t.project, id: t.runId }
+		: null;
 }

@@ -13,6 +13,7 @@ export const TTL_MS = 60_000;
 const DEFAULT_LIMIT_WAIT_MS = 60_000;
 const TIMEOUT_MS = 10_000;
 const MAX_PAGES = 3;
+const MAX_BODY = 4000;
 
 export interface OpenPull {
 	number: number;
@@ -26,6 +27,10 @@ export interface OpenPull {
 export interface OpenIssue {
 	number: number;
 	title: string;
+	/** The issue text, cut to `MAX_BODY` characters. */
+	body: string;
+	/** True when `body` was cut. */
+	bodyTruncated: boolean;
 	url: string;
 	updatedAt: string;
 }
@@ -180,6 +185,8 @@ export function createGithubReads({
 					return {
 						number: r.number,
 						title: str(r.title),
+						body: str(r.body).slice(0, MAX_BODY),
+						bodyTruncated: str(r.body).length > MAX_BODY,
 						url: str(r.html_url),
 						updatedAt: str(r.updated_at)
 					};
