@@ -57,7 +57,7 @@ body = """
 {{ nodes.triage.result.summary }}
 
 ---
-To start implementing this, comment `/ez implement` on this issue or click Implement on the project's Tasks page in enzarb."""
+To start implementing this, comment `@enzarb implement` on this issue or click Implement on the project's Tasks page in enzarb."""
 next = "done"
 
 [workflows.triage-issues.nodes.done]

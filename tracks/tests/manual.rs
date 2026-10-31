@@ -1,5 +1,5 @@
 //! `POST /v1/runs` (start by hand) against a real Postgres, and the triggers of the
-//! implement-issues template: slash/mention comment, assignment and `manual`.
+//! implement-issues template: @enzarb comment, label and `manual`.
 
 use std::sync::Arc;
 
@@ -21,14 +21,14 @@ use tower::ServiceExt;
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
 /// The trigger part of the `implement-labeled-issues` template (ui/.../templates.json).
-const COND: &str = r#"(event.name == 'issues' and event.action == 'labeled' and event.label.name == 'ez') or (event.name == 'issues' and event.action == 'assigned' and event.assignee.login == 'ez-agent') or (event.name == 'issue_comment' and event.issue.pull_request is undefined and event.comment.user.type != 'Bot' and event.comment.author_association in ['OWNER', 'MEMBER', 'COLLABORATOR'] and event.comment.body | regex_match('(?im)^[[:space:]]*(/ez|@enzarb)[[:space:]]+implement([[:space:]]|$)')) or event.name == 'manual'"#;
+const COND: &str = r#"(event.name == 'issues' and event.action == 'labeled' and event.label.name == 'ez') or (event.name == 'issue_comment' and event.issue.pull_request is undefined and event.issue.state == 'open' and event.comment.user.type != 'Bot' and event.comment.author_association in ['OWNER', 'MEMBER', 'COLLABORATOR'] and event.comment.body | regex_match('(?im)^[[:space:]]*@enzarb[[:space:]]+implement([[:space:]]|$)')) or event.name == 'manual'"#;
 
 fn workflows() -> String {
     format!(
         r#"
 version = 1
 [workflows.implement]
-on = ["issues.labeled", "issues.assigned", "issue_comment.created", "manual"]
+on = ["issues.labeled", "issue_comment.created", "manual"]
 if = "{}"
 start = "build"
 [workflows.implement.nodes.build]
@@ -200,7 +200,12 @@ fn matched(e: &Event) -> bool {
 }
 
 fn comment(body: &str, assoc: &str, user_type: &str, pr: bool) -> Event {
-    let mut issue = json!({"number": 3, "title": "T", "user": {"login": "a"}, "html_url": "u"});
+    comment_on(body, assoc, user_type, pr, "open")
+}
+
+fn comment_on(body: &str, assoc: &str, user_type: &str, pr: bool, state: &str) -> Event {
+    let mut issue =
+        json!({"number": 3, "title": "T", "user": {"login": "a"}, "html_url": "u", "state": state});
     if pr {
         issue["pull_request"] = json!({"url": "x"});
     }
@@ -215,7 +220,12 @@ fn comment(body: &str, assoc: &str, user_type: &str, pr: bool) -> Event {
 
 #[test]
 fn the_comment_trigger_needs_a_command_at_a_line_start_from_a_writer() {
-    assert!(matched(&comment("/ez implement", "OWNER", "User", false)));
+    assert!(matched(&comment(
+        "@enzarb implement",
+        "OWNER",
+        "User",
+        false
+    )));
     assert!(matched(&comment(
         "Looks good.\n  @EnZarb Implement\nthanks",
         "MEMBER",
@@ -223,48 +233,83 @@ fn the_comment_trigger_needs_a_command_at_a_line_start_from_a_writer() {
         false
     )));
     assert!(matched(&comment(
-        "/ez implement please",
+        "@enzarb implement please",
         "COLLABORATOR",
         "User",
         false
     )));
+    // The old slash form no longer starts anything.
+    assert!(!matched(&comment("/ez implement", "OWNER", "User", false)));
     // Not at the start of a line, or another command.
     assert!(!matched(&comment(
-        "please /ez implement",
+        "please @enzarb implement",
         "OWNER",
         "User",
         false
     )));
     assert!(!matched(&comment(
-        "`/ez implement`",
+        "`@enzarb implement`",
         "OWNER",
         "User",
         false
     )));
     assert!(!matched(&comment(
-        "/ez implementation",
+        "@enzarb implementation",
         "OWNER",
         "User",
         false
     )));
     // Not a writer.
-    assert!(!matched(&comment("/ez implement", "NONE", "User", false)));
     assert!(!matched(&comment(
-        "/ez implement",
+        "@enzarb implement",
+        "NONE",
+        "User",
+        false
+    )));
+    assert!(!matched(&comment(
+        "@enzarb implement",
         "CONTRIBUTOR",
         "User",
         false
     )));
     // The bot's own comments never trigger it, even when they quote the command.
-    assert!(!matched(&comment("/ez implement", "MEMBER", "Bot", false)));
+    assert!(!matched(&comment(
+        "@enzarb implement",
+        "MEMBER",
+        "Bot",
+        false
+    )));
     // Pull requests are not issues.
-    assert!(!matched(&comment("/ez implement", "OWNER", "User", true)));
+    assert!(!matched(&comment(
+        "@enzarb implement",
+        "OWNER",
+        "User",
+        true
+    )));
 }
 
 #[test]
-fn label_assign_and_manual_triggers() {
+fn closed_issues_do_not_start_from_a_comment() {
+    assert!(matched(&comment_on(
+        "@enzarb implement",
+        "OWNER",
+        "User",
+        false,
+        "open"
+    )));
+    assert!(!matched(&comment_on(
+        "@enzarb implement",
+        "OWNER",
+        "User",
+        false,
+        "closed"
+    )));
+}
+
+#[test]
+fn label_and_manual_triggers_start_and_assigning_starts_nothing() {
     let ev = |name: &str, action: Option<&str>, extra: Value| {
-        let mut p = json!({"issue": {"number": 3, "user": {"login": "a"}, "html_url": "u"}});
+        let mut p = json!({"issue": {"number": 3, "user": {"login": "a"}, "html_url": "u", "state": "open"}});
         for (k, v) in extra.as_object().unwrap() {
             p[k] = v.clone();
         }
@@ -280,7 +325,7 @@ fn label_assign_and_manual_triggers() {
         Some("labeled"),
         json!({"label": {"name": "bug"}})
     )));
-    assert!(matched(&ev(
+    assert!(!matched(&ev(
         "issues",
         Some("assigned"),
         json!({"assignee": {"login": "ez-agent"}})
