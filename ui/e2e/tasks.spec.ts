@@ -81,6 +81,29 @@ test('Retry restarts a failed run and Stop for now ends a wait', async ({ page }
 	await expect(page.getByText('Stopping the run.')).toBeVisible();
 });
 
+for (const size of [
+	{ width: 1280, height: 800 },
+	{ width: 1280, height: 1080 },
+	{ width: 390, height: 800 }
+]) {
+	test(`the chat bar stays in view at ${size.width}x${size.height}`, async ({ page }) => {
+		await page.setViewportSize(size);
+		await installFakeSandbox(page);
+		await page.goto(BASE);
+		await page
+			.getByRole('listitem', { name: /Pull requests to review/ })
+			.getByRole('link')
+			.click();
+		for (const el of [
+			page.getByPlaceholder(/coming next/),
+			page.getByRole('button', { name: 'Send' })
+		]) {
+			await expect(el).toBeVisible();
+			await expect(el).toBeInViewport({ ratio: 1 });
+		}
+	});
+}
+
 test('on a phone the list and the detail stack, with a back control', async ({ page }) => {
 	await page.setViewportSize({ width: 390, height: 800 });
 	await installFakeSandbox(page);

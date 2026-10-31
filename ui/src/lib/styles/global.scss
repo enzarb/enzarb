@@ -3028,8 +3028,9 @@ textarea.ez-control {
 	&__detail {
 		display: flex;
 		flex-direction: column;
-		height: calc(100dvh - 10rem);
-		min-height: 24rem;
+		// Viewport minus the app header, project header and tabs, page padding and footer.
+		height: calc(100dvh - 22rem);
+		min-height: 20rem;
 	}
 
 	&__scroll {
@@ -3104,8 +3105,23 @@ textarea.ez-control {
 			margin-bottom: var(--space-2, 0.5rem);
 		}
 
+		// The page scrolls; the chat bar stays pinned to the bottom of the screen.
 		&__detail {
-			height: calc(100dvh - 8rem);
+			height: auto;
+			min-height: 0;
+		}
+
+		&__scroll {
+			overflow: visible;
+			padding-right: 0;
+		}
+
+		&__chat {
+			position: sticky;
+			bottom: 0;
+			background: var(--ez-bg);
+			margin-top: var(--space-3, 0.75rem);
+			padding-bottom: var(--space-2, 0.5rem);
 		}
 	}
 }
