@@ -20,15 +20,32 @@ use tower::ServiceExt;
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
-/// The trigger part of the `implement-labeled-issues` template (ui/.../templates.json).
-const COND: &str = r#"(event.name == 'issues' and event.action == 'labeled' and event.label.name == 'ez') or (event.name == 'issue_comment' and event.issue.pull_request is undefined and event.issue.state == 'open' and event.comment.user.type != 'Bot' and event.comment.author_association in ['OWNER', 'MEMBER', 'COLLABORATOR'] and event.comment.body | regex_match('(?im)^[[:space:]]*@enzarb[[:space:]]+implement([[:space:]]|$)')) or event.name == 'manual'"#;
+/// The `on` and `if` of the `implement-labeled-issues` template, read from the template itself
+/// so these tests always check what the UI ships.
+fn implement_trigger() -> (String, String) {
+    let all: serde_json::Value = serde_json::from_str(include_str!(
+        "../../ui/src/lib/rule-templates/templates.json"
+    ))
+    .expect("templates.json");
+    let wf = &all
+        .as_array()
+        .expect("template list")
+        .iter()
+        .find(|t| t["id"] == "implement-labeled-issues")
+        .expect("implement template")["workflow"];
+    (
+        wf["on"].to_string(),
+        wf["if"].as_str().expect("if").to_string(),
+    )
+}
 
 fn workflows() -> String {
+    let (on, cond) = implement_trigger();
     format!(
         r#"
 version = 1
 [workflows.implement]
-on = ["issues.labeled", "issue_comment.created", "manual"]
+on = {}
 if = "{}"
 start = "build"
 [workflows.implement.nodes.build]
@@ -45,7 +62,8 @@ start = "done"
 type = "end"
 status = "done"
 "#,
-        COND.replace('"', "\\\"")
+        on,
+        cond.replace('"', "\\\"")
     )
 }
 
