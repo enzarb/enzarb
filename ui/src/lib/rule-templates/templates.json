@@ -104,7 +104,7 @@
 	{
 		"id": "implement-labeled-issues",
 		"title": "Implement issues on request",
-		"description": "Plan the fix, implement it and open a pull request when an issue gets the ez label, gets an `@enzarb implement` comment from someone with write access, or Implement is clicked in enzarb.",
+		"description": "Plan the fix, implement it and open a pull request when an issue gets the ez label, gets an `@enzarb implement` comment from someone with write access, or Implement is clicked in enzarb. It posts the plan to the issue and waits for approval (comment `@enzarb approve` or `@enzarb revise ...`, or use enzarb); set `vars.approve_plan = false` to skip that.",
 		"modes": [
 			{
 				"id": "planner",
@@ -137,17 +137,58 @@
 			"on": ["issues.labeled", "issue_comment.created", "manual"],
 			"if": "(event.name == 'issues' and event.action == 'labeled' and event.label.name == 'ez') or (event.name == 'issue_comment' and event.issue.pull_request is undefined and event.issue.state == 'open' and event.comment.user.type != 'Bot' and event.comment.author_association in ['OWNER', 'MEMBER', 'COLLABORATOR'] and event.comment.body | regex_match('(?im)^[[:space:]]*@enzarb[[:space:]]+implement([[:space:]]|$)')) or event.name == 'manual'",
 			"start": "plan",
+			"vars": {
+				"approve_plan": true
+			},
 			"nodes": {
 				"plan": {
 					"type": "agent",
 					"mode": "planner",
-					"instruction": "Issue #{{ event.issue.number }}: {{ event.issue.title }}\n\n{{ event.issue.body }}",
+					"instruction": "Issue #{{ event.issue.number }}: {{ event.issue.title }}\n\n{{ event.issue.body }}{% if nodes.approve_plan is defined %}\n\nYour previous plan:\n\n{{ nodes.plan.result.plan }}\n\nRevise the plan using this feedback:\n\n{% if event.name == 'manual' %}{{ event.text }}{% else %}{{ event.comment.body }}{% endif %}{% endif %}",
 					"result": {
 						"plan": {
 							"type": "string"
 						}
 					},
-					"next": "implement"
+					"next": [
+						{
+							"if": "vars.approve_plan",
+							"to": "post_plan"
+						},
+						{
+							"to": "implement"
+						}
+					]
+				},
+				"post_plan": {
+					"type": "action",
+					"action": "comment",
+					"body": "## Proposed plan\n\n{{ nodes.plan.result.plan }}\n\n---\nTo go ahead, comment `@enzarb approve` (at the start of a line) or click Approve on the project's Tasks page in enzarb. To change the plan, comment `@enzarb revise <what to change>` or send changes from enzarb.",
+					"next": "approve_plan"
+				},
+				"approve_plan": {
+					"type": "wait",
+					"on": ["manual", "issue_comment.created"],
+					"if": "event.issue.number == subject.number and ((event.name == 'manual' and event.action in ['approve', 'revise']) or (event.name == 'issue_comment' and event.action == 'created' and event.comment.user.type != 'Bot' and event.comment.author_association in ['OWNER', 'MEMBER', 'COLLABORATOR'] and event.comment.body | regex_match('(?im)^[[:space:]]*@enzarb[[:space:]]+(approve|revise)([[:space:]]|$)')))",
+					"timeout": "14d",
+					"next": [
+						{
+							"if": "timed_out",
+							"to": "plan_expired"
+						},
+						{
+							"if": "(event.name == 'manual' and event.action == 'revise') or (event.name == 'issue_comment' and event.comment.body | regex_match('(?im)^[[:space:]]*@enzarb[[:space:]]+revise([[:space:]]|$)'))",
+							"to": "plan"
+						},
+						{
+							"to": "implement"
+						}
+					]
+				},
+				"plan_expired": {
+					"type": "end",
+					"status": "cancelled",
+					"reason": "plan not approved in time"
 				},
 				"implement": {
 					"type": "agent",

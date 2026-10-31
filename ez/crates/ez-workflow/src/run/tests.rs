@@ -419,3 +419,26 @@ fn end_reason_is_validated() {
     let rep = crate::validate::validate(&Engine::new(), &file, None);
     assert!(!rep.is_ok(), "{rep:?}");
 }
+
+#[test]
+fn vars_render_and_drive_edges() {
+    let text = "version = 1\n[workflows.w]\non = [\"issues\"]\nstart = \"a\"\n[workflows.w.vars]\ngate = true\nlabel = \"hi\"\n[workflows.w.nodes.a]\ntype = \"command\"\nrun = \"echo {{ vars.label }}\"\nnext = [{ if = \"vars.gate\", to = \"yes\" }, { to = \"no\" }]\n[workflows.w.nodes.yes]\ntype = \"end\"\nstatus = \"done\"\n[workflows.w.nodes.no]\ntype = \"end\"\nstatus = \"failed\"\n";
+    let file = parse(text).unwrap();
+    let e = Engine::new();
+    let mut s = RunState::start(&file, "w", &labeled(), run(false)).unwrap();
+    let Rendered::Command { script, .. } = s.render(&e, &file).unwrap().unwrap() else {
+        panic!("not a command")
+    };
+    assert_eq!(script.unwrap(), "echo 'hi'");
+    s.advance(&e, &file, json!({"exit_code": 0})).unwrap();
+    assert_eq!(
+        s.status,
+        RunStatus::Ended {
+            status: EndStatus::Done,
+            node: Some("yes".into()),
+            reason: None
+        }
+    );
+    let back: RunState = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+    assert_eq!(back.vars["gate"], json!(true));
+}

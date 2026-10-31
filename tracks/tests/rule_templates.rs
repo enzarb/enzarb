@@ -112,3 +112,61 @@ fn fix_failing_ci_failure_reason_renders() {
         render(serde_json::json!({"fix": {"result": null}})).ends_with("no summary was submitted")
     );
 }
+
+/// `implement-labeled-issues` pauses for plan approval unless `vars.approve_plan` is false, and
+/// the approval wait takes manual approve/revise and writers' `@enzarb approve|revise` comments.
+#[test]
+fn implement_template_gates_on_plan_approval() {
+    let templates: Vec<Template> = serde_json::from_str(TEMPLATES).unwrap();
+    let t = templates
+        .iter()
+        .find(|t| t.id == "implement-labeled-issues")
+        .unwrap();
+    assert_eq!(t.workflow["vars"]["approve_plan"], true);
+    let nodes = &t.workflow["nodes"];
+    let plan_next = nodes["plan"]["next"].as_array().unwrap();
+    assert_eq!(plan_next[0]["if"], "vars.approve_plan");
+    assert_eq!(plan_next[1]["to"], "implement");
+    let wait = &nodes["approve_plan"];
+    assert_eq!(wait["type"], "wait");
+    assert_eq!(
+        wait["on"],
+        serde_json::json!(["manual", "issue_comment.created"])
+    );
+    assert_eq!(wait["timeout"], "14d");
+    assert_eq!(nodes["plan_expired"]["reason"], "plan not approved in time");
+
+    let cond = wait["if"].as_str().unwrap();
+    let engine = Engine::new();
+    let comment = |body: &str, kind: &str, assoc: &str, issue: u64| {
+        serde_json::json!({"subject": {"number": 7}, "event": {"name": "issue_comment", "action": "created",
+            "issue": {"number": issue},
+            "comment": {"body": body, "user": {"type": kind}, "author_association": assoc}}})
+    };
+    let manual = |action: &str| {
+        serde_json::json!({"subject": {"number": 7}, "event": {"name": "manual", "action": action,
+            "issue": {"number": 7}}})
+    };
+    assert!(engine.eval_bool(cond, &manual("approve")).unwrap());
+    assert!(engine.eval_bool(cond, &manual("revise")).unwrap());
+    assert!(!engine.eval_bool(cond, &manual("implement")).unwrap());
+    let ok = |c| engine.eval_bool(cond, &c).unwrap();
+    assert!(ok(comment("@enzarb approve", "User", "OWNER", 7)));
+    assert!(ok(comment(
+        "  @enzarb revise smaller diff",
+        "User",
+        "COLLABORATOR",
+        7
+    )));
+    assert!(ok(comment(
+        "thanks\n@enzarb approve\n",
+        "User",
+        "MEMBER",
+        7
+    )));
+    assert!(!ok(comment("@enzarb approve", "User", "NONE", 7)));
+    assert!(!ok(comment("@enzarb approve", "Bot", "MEMBER", 7)));
+    assert!(!ok(comment("@enzarb approve", "User", "OWNER", 8)));
+    assert!(!ok(comment("lgtm", "User", "OWNER", 7)));
+    assert!(!ok(comment("`@enzarb approve`", "User", "OWNER", 7)));
+}
