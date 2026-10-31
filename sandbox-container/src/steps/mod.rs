@@ -309,6 +309,8 @@ struct Inner {
     activity: ActivityGate,
     self_exe: PathBuf,
     runs: Mutex<HashMap<String, Arc<Run>>>,
+    /// Held for the length of a workspace pruning pass.
+    prune: Mutex<()>,
     /// Set by [`StepManager::interrupt_all`]: steps that end now are interrupted by the
     /// sandbox's own shutdown and stay resumable (no `step_finished` is reported).
     shutting_down: std::sync::atomic::AtomicBool,
@@ -338,6 +340,7 @@ impl StepManager {
                 activity: ActivityGate::default(),
                 self_exe: std::env::current_exe().unwrap_or_else(|_| "sandbox-init".into()),
                 runs: Mutex::default(),
+                prune: Mutex::default(),
                 shutting_down: Default::default(),
             }),
         }
@@ -690,6 +693,46 @@ impl StepManager {
         f(&busy)
     }
 
+    /// Runs `f` with the task ids whose checkouts must stay while no step can start or end:
+    /// any run of the task is running, or may be continued (interrupted, or finished by an
+    /// environment failure, see [`resumable`]). Only tasks whose runs all finished for good
+    /// (or that no run knows) are left out.
+    pub fn with_protected_tasks<R>(
+        &self,
+        f: impl FnOnce(&std::collections::HashSet<String>) -> R,
+    ) -> R {
+        let runs = self.inner.runs.lock().unwrap();
+        let mut keep = std::collections::HashSet::new();
+        for r in runs.values() {
+            let g = r.inner.lock().unwrap();
+            let ended = g.phase == StepPhase::Finished && !resumable(&g);
+            if ended {
+                continue;
+            }
+            if let Some(s) = g.start.as_deref().or(g.stored.as_ref()) {
+                keep.insert(s.task_id.clone());
+            }
+        }
+        f(&keep)
+    }
+
+    /// Serializes workspace pruning passes (the periodic one and the one before a step starts).
+    pub fn prune_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.inner
+            .prune
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// [`Self::prune_lock`] unless a pass is running.
+    pub fn try_prune_lock(&self) -> Option<std::sync::MutexGuard<'_, ()>> {
+        match self.inner.prune.try_lock() {
+            Ok(g) => Some(g),
+            Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
+    }
+
     /// CTRL `step_resume`.
     pub fn resume(&self, session: &Session, run_id: &str) {
         let Some(run) = self.get(run_id) else {
@@ -956,6 +999,35 @@ impl Inner {
         (self.cfg.mise_bin.clone(), args)
     }
 
+    /// Runs the workspace pruner when the disk is low, then reports why the workspace is still
+    /// too full to start a step (`environment::workspace_full`), if it is.
+    async fn ensure_free_space(self: &Arc<Self>) -> Option<String> {
+        let ws = self.cfg.workspace.clone();
+        let prune = &self.cfg.workspace_prune;
+        let low =
+            crate::docker_prune::disk_usage(&ws).is_some_and(|d| d.is_low(prune.min_free_percent));
+        if prune.enabled && low {
+            let steps = StepManager {
+                inner: self.clone(),
+            };
+            let min = prune.min_free_percent;
+            let ws2 = ws.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                // A pass already running makes this one redundant; never wait behind it.
+                crate::workspace_prune::prune_if_idle(&ws2, &steps, min)
+            })
+            .await;
+        }
+        self.workspace_full()
+    }
+
+    fn workspace_full(&self) -> Option<String> {
+        match self.cfg.workspace_full_probe {
+            Some(probe) => probe(&self.cfg.workspace),
+            None => environment::workspace_full(&self.cfg.workspace),
+        }
+    }
+
     fn memory_events(&self) -> PathBuf {
         self.cfg.cgroup_root.join("memory.events")
     }
@@ -982,6 +1054,16 @@ impl Inner {
             session_kind::SYSTEM,
             json!({"event": if resume { "resumed" } else { "started" }, "attempt": start.attempt}),
         );
+        // A nearly full disk fails the clone with an obscure git write error: prune first, and
+        // if that is not enough, end the step as `disk_full` (resumable) before touching it.
+        if let Some(why) = self.ensure_free_space().await {
+            run.evidence.lock().unwrap().workspace_full = Some(why.clone());
+            return finished(
+                id,
+                exit::FAILURE,
+                Some(format!("not enough disk space: {why}")),
+            );
+        }
         // Workspaces.
         let g = git::Git {
             cfg: &self.cfg,
@@ -1428,7 +1510,7 @@ impl Inner {
             ev.text.push_str(e);
         }
         ev.oom_after = environment::oom_kill_count(&self.memory_events());
-        ev.workspace_full = environment::workspace_full(&self.cfg.workspace);
+        ev.workspace_full = ev.workspace_full.take().or_else(|| self.workspace_full());
         environment::classify(&ev)
     }
 

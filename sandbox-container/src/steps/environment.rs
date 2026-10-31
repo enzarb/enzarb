@@ -261,16 +261,33 @@ fn parse_oom_kill(s: &str) -> Option<u64> {
 /// Why `dir`'s filesystem has no space left, if it has none.
 pub fn workspace_full(dir: &Path) -> Option<String> {
     let st = nix::sys::statvfs::statvfs(dir).ok()?;
+    #[allow(clippy::unnecessary_cast)]
+    let frsize = st.fragment_size() as u64;
     full_reason(
-        (st.blocks() as u64, st.blocks_available() as u64),
+        (
+            (st.blocks() as u64).saturating_mul(frsize),
+            (st.blocks_available() as u64).saturating_mul(frsize),
+        ),
         (st.files() as u64, st.files_available() as u64),
     )
 }
 
-/// Filesystems that report no totals (some report 0 inodes) are never "full".
-fn full_reason(blocks: (u64, u64), files: (u64, u64)) -> Option<String> {
-    if blocks.0 > 0 && blocks.1 == 0 {
+/// A disk with less free than this (or 1% of its size, if smaller) cannot hold a clone or a
+/// build, and git dies on it with a write error instead of ENOSPC at a clean point.
+const FREE_FLOOR: u64 = 64 * 1024 * 1024;
+
+/// `bytes` and `files` are (total, available). Filesystems that report no totals (some report
+/// 0 inodes) are never "full".
+fn full_reason(bytes: (u64, u64), files: (u64, u64)) -> Option<String> {
+    let floor = FREE_FLOOR.min(bytes.0 / 100);
+    if bytes.0 > 0 && bytes.1 == 0 {
         Some("workspace has 0 free blocks (statvfs)".into())
+    } else if bytes.0 > 0 && bytes.1 < floor {
+        Some(format!(
+            "workspace has {} KiB free (< {} KiB floor)",
+            bytes.1 / 1024,
+            floor / 1024
+        ))
     } else if files.0 > 0 && files.1 == 0 {
         Some("workspace has 0 free inodes (statvfs)".into())
     } else {
@@ -326,6 +343,20 @@ mod tests {
         assert!(full_reason((10, 5), (10, 0)).is_some());
         assert!(full_reason((10, 5), (0, 0)).is_none());
         assert!(full_reason((0, 0), (0, 0)).is_none());
+    }
+
+    #[test]
+    fn a_nearly_full_disk_is_full_below_the_floor() {
+        const MIB: u64 = 1024 * 1024;
+        let none = (0, 0);
+        // 1.6 MiB free of 100 GiB: git cannot even clone.
+        let why = full_reason((100 * 1024 * 1024 * MIB, 3 * MIB / 2), none).unwrap();
+        assert!(why.contains("floor"), "{why}");
+        // The floor is 64 MiB on a big disk, and 1% of a small one.
+        assert!(full_reason((100 * 1024 * MIB, 64 * MIB), none).is_none());
+        assert!(full_reason((100 * 1024 * MIB, 64 * MIB - 1), none).is_some());
+        assert!(full_reason((1000 * MIB, 11 * MIB), none).is_none());
+        assert!(full_reason((1000 * MIB, 9 * MIB), none).is_some());
     }
 
     #[test]

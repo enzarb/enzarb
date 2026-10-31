@@ -940,8 +940,8 @@ async fn tracked_step_outputs_do_not_block_switching_branches() {
     assert!(!files.contains(".enzarb/out"), "{files}");
 }
 
-/// When space is low, build caches (`CACHEDIR.TAG` directories) go from idle task workspaces;
-/// a task with a running step keeps its cache.
+/// When space is low, build caches (`CACHEDIR.TAG` directories) and then the whole checkouts go
+/// from idle task workspaces; a task with a running step keeps everything.
 #[tokio::test]
 async fn workspace_prune_spares_tasks_with_a_running_step() {
     let env = Env::new();
@@ -976,22 +976,18 @@ async fn workspace_prune_spares_tasks_with_a_running_step() {
     let removed = common::read_only(&env.ws, || {
         sandbox_init::workspace_prune::prune_once(&env.ws, &steps, 100)
     });
-    assert_eq!(removed, 1);
+    assert_eq!(removed, 2, "the idle task's cache, then its checkout");
     assert!(cache("task-1").exists(), "the busy task kept its cache");
     assert!(
-        !cache("task-idle").exists(),
-        "the idle task's cache was removed"
+        !env.ws.join("tasks/task-idle").exists(),
+        "the idle task's checkout was removed"
     );
     assert!(
-        std::fs::read_dir(env.ws.join("tasks/task-idle/o/r"))
+        std::fs::read_dir(env.ws.join("tasks"))
             .unwrap()
             .flatten()
             .all(|e| !e.file_name().to_string_lossy().contains("enzarb-prune")),
         "nothing left aside"
-    );
-    assert!(
-        env.ws.join("tasks/task-idle/o/r/src").exists(),
-        "sources stay"
     );
     s.step_stop("busy-1").ok();
 }
@@ -1025,40 +1021,143 @@ async fn steps_share_one_cargo_target_dir_per_repo() {
     assert!(want.is_dir());
 }
 
-/// The shared target dir is pruned last, only when idle, and not while a build is recent.
+/// The shared target dir is pruned after the other phases; only a held Cargo lock spares it
+/// (a recent write does not).
 #[tokio::test]
-async fn workspace_prune_frees_idle_shared_target_dirs() {
+async fn workspace_prune_frees_shared_target_dirs_unless_locked() {
+    use nix::fcntl::{Flock, FlockArg};
     let env = Env::new();
     let (_addr, steps) = env.server_with_steps().await;
     let dir = env.ws.join(".cache/target/o/r");
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(dir.join("debug")).unwrap();
     std::fs::write(
         dir.join("CACHEDIR.TAG"),
         "Signature: 8a477f597d28d172789f06886806bc55\n",
     )
     .unwrap();
-    // Just written: a build may be running.
-    assert_eq!(
-        sandbox_init::workspace_prune::prune_once(&env.ws, &steps, 100),
-        0
-    );
-    assert!(dir.exists());
-    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
-    std::fs::File::open(&dir)
-        .unwrap()
-        .set_modified(old)
-        .unwrap();
+    std::fs::write(dir.join("debug/.cargo-lock"), "").unwrap();
     // Not low: untouched.
     assert_eq!(
         sandbox_init::workspace_prune::prune_once(&env.ws, &steps, 1),
         0
     );
     assert!(dir.exists());
+    // A build holds the lock: spared, although it was just written.
+    let lock = Flock::lock(
+        std::fs::File::open(dir.join("debug/.cargo-lock")).unwrap(),
+        FlockArg::LockExclusiveNonblock,
+    )
+    .unwrap();
+    assert_eq!(
+        sandbox_init::workspace_prune::prune_once(&env.ws, &steps, 100),
+        0
+    );
+    assert!(dir.exists());
+    drop(lock);
     assert_eq!(
         sandbox_init::workspace_prune::prune_once(&env.ws, &steps, 100),
         1
     );
     assert!(!dir.exists());
+}
+
+/// Checkouts of ended tasks are pruned; a task whose step failed on the environment (and is
+/// resumed by the next `step_start`) keeps its checkout.
+#[tokio::test]
+async fn workspace_prune_keeps_resumable_tasks_and_removes_ended_ones() {
+    let env = Env::new();
+    let (addr, steps) = env.server_with_steps().await;
+    let (s, mut ev) = connect(addr).await;
+    let mut done = step(
+        "done-1",
+        StepExec::Command {
+            run: "true".into(),
+            tools: vec![],
+        },
+        vec![],
+    );
+    done.task_id = "task-done".into();
+    start(&s, &mut ev, done).await;
+    let (_, fin) = collect(&mut ev, "done-1", |_| false).await;
+    assert_eq!(fin.unwrap().exit, "success");
+    // task-1: failed with `disk_full`, so resumable.
+    let exec = StepExec::Command {
+        run: flaky_cmd(&env),
+        tools: vec![],
+    };
+    start(&s, &mut ev, step("full-1", exec, vec![])).await;
+    let (_, fin) = collect(&mut ev, "full-1", |_| false).await;
+    assert_eq!(
+        fin.unwrap().environment.unwrap().kind,
+        EnvironmentKind::DiskFull
+    );
+    assert!(env.ws.join("tasks/task-done").exists());
+    let removed = common::read_only(&env.ws, || {
+        sandbox_init::workspace_prune::prune_once(&env.ws, &steps, 100)
+    });
+    assert_eq!(removed, 1);
+    assert!(!env.ws.join("tasks/task-done").exists());
+    assert!(env.ws.join("tasks/task-1").exists());
+}
+
+/// Space is low at step start: the pruner runs first, the step then proceeds.
+#[tokio::test]
+async fn a_step_prunes_a_low_workspace_before_it_starts() {
+    let env = Env::new();
+    let (addr, _steps) = env
+        .server_cfg(|c| c.workspace_prune.min_free_percent = 100)
+        .await;
+    let old = env.ws.join("tasks/task-old/o/r/target");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(
+        old.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    )
+    .unwrap();
+    let (s, mut ev) = connect(addr).await;
+    let st = step(
+        "prune-1",
+        StepExec::Command {
+            run: "true".into(),
+            tools: vec![],
+        },
+        vec![env.workspace("feature/p")],
+    );
+    start(&s, &mut ev, st).await;
+    let (_, fin) = collect(&mut ev, "prune-1", |_| false).await;
+    let fin = fin.unwrap();
+    assert_eq!(fin.exit, "success", "{fin:?}");
+    assert!(!env.ws.join("tasks/task-old").exists());
+    assert!(env.ws.join("tasks/task-1/o/r/.git").exists());
+}
+
+/// A full workspace ends the step as `disk_full` before any clone is attempted. The disk check
+/// is injected, so this runs unprivileged.
+#[tokio::test]
+async fn a_step_on_a_full_workspace_fails_fast_without_cloning() {
+    let env = Env::new();
+    let (addr, _) = env.server_cfg(full_disk).await;
+    let (s, mut ev) = connect(addr).await;
+    let st = step(
+        "full-fast",
+        StepExec::Command {
+            run: "true".into(),
+            tools: vec![],
+        },
+        vec![env.workspace("feature/f")],
+    );
+    start(&s, &mut ev, st).await;
+    let (_, fin) = collect(&mut ev, "full-fast", |_| false).await;
+    let cloned = env.ws.join("tasks/task-1/o/r").exists();
+    let fin = fin.unwrap();
+    assert_eq!(fin.exit, "failure", "{fin:?}");
+    assert_eq!(fin.environment.unwrap().kind, EnvironmentKind::DiskFull);
+    assert!(!cloned, "no clone was attempted");
+}
+
+/// Makes the workspace look full (see `Config::workspace_full_probe`).
+fn full_disk(c: &mut Config) {
+    c.workspace_full_probe = Some(|_| Some("workspace has 0 free blocks (statvfs)".into()));
 }
 
 /// A workspace with `start_ref` starts the new branch at that ref (a pull request head, which
@@ -1274,27 +1373,26 @@ async fn a_hostname_error_in_the_step_output_is_a_code_failure() {
     assert_eq!(fin.environment, None);
 }
 
-/// A real full filesystem needs a mount; skipped where that is not permitted.
+/// A full workspace is reported as `disk_full` (the disk check is injected).
 #[tokio::test]
 async fn a_full_workspace_is_disk_full() {
     let env = Env::new();
-    let mounted = Command::new("mount")
-        .args(["-t", "tmpfs", "-o", "size=64k"])
-        .arg("tmpfs")
-        .arg(&env.ws)
-        .status()
-        .is_ok_and(|s| s.success());
-    if !mounted {
-        eprintln!("skipped: cannot mount a tmpfs here");
-        return;
-    }
-    let fin = run_cmd(
-        &env,
-        "env-full",
-        "dd if=/dev/zero of=big bs=1k count=1024 2>/dev/null; exit 1".into(),
+    let (addr, _) = env.server_cfg(full_disk).await;
+    let (s, mut ev) = connect(addr).await;
+    start(
+        &s,
+        &mut ev,
+        step(
+            "env-full",
+            StepExec::Command {
+                run: "exit 1".into(),
+                tools: vec![],
+            },
+            vec![],
+        ),
     )
     .await;
-    let _ = Command::new("umount").arg(&env.ws).status();
+    let fin = collect(&mut ev, "env-full", |_| false).await.1.unwrap();
     assert_eq!(fin.exit, "failure", "{fin:?}");
     assert_eq!(fin.environment.unwrap().kind, EnvironmentKind::DiskFull);
 }

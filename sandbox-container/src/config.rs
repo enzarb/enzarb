@@ -1,7 +1,7 @@
 //! Environment configuration.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::docker_prune::PruneConfig;
@@ -93,6 +93,8 @@ pub struct Config {
     pub docker_prune: PruneConfig,
     /// `ENZARB_WORKSPACE_PRUNE*`: build caches in task workspaces are removed when space runs low.
     pub workspace_prune: WorkspacePruneConfig,
+    /// Replaces the statvfs check for a full workspace (tests inject a full disk).
+    pub workspace_full_probe: Option<fn(&Path) -> Option<String>>,
 }
 
 /// The ACP agent a chat runs.
@@ -181,6 +183,7 @@ impl Default for Config {
             dockerd: DockerdConfig::default(),
             docker_prune: PruneConfig::default(),
             workspace_prune: WorkspacePruneConfig::default(),
+            workspace_full_probe: None,
         }
     }
 }
