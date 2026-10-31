@@ -125,8 +125,8 @@ fn implement_template_gates_on_plan_approval() {
     assert_eq!(t.workflow["vars"]["approve_plan"], true);
     let nodes = &t.workflow["nodes"];
     let plan_next = nodes["plan"]["next"].as_array().unwrap();
-    assert_eq!(plan_next[0]["if"], "vars.approve_plan");
-    assert_eq!(plan_next[1]["to"], "implement");
+    assert_eq!(plan_next[1]["if"], "vars.approve_plan");
+    assert_eq!(plan_next[2]["to"], "implement");
     let wait = &nodes["approve_plan"];
     assert_eq!(wait["type"], "wait");
     assert_eq!(
@@ -169,4 +169,75 @@ fn implement_template_gates_on_plan_approval() {
     assert!(!ok(comment("@enzarb approve", "User", "OWNER", 8)));
     assert!(!ok(comment("lgtm", "User", "OWNER", 7)));
     assert!(!ok(comment("`@enzarb approve`", "User", "OWNER", 7)));
+}
+
+/// The triage and review agents continue to their comment only on success with a result; any
+/// other outcome ends the run `failed` with the agent's real error (or a fallback).
+#[test]
+fn agent_failure_ends_with_the_agents_error() {
+    let templates: Vec<Template> = serde_json::from_str(TEMPLATES).unwrap();
+    let engine = Engine::new();
+    for (id, node, next) in [
+        ("review-pull-requests", "review", "comment"),
+        ("triage-issues", "triage", "label"),
+    ] {
+        let t = templates.iter().find(|t| t.id == id).unwrap();
+        let edges = t.workflow["nodes"][node]["next"].as_array().unwrap();
+        assert_eq!(edges[0]["to"], next, "{id}");
+        assert_eq!(edges[1]["to"], "failed", "{id}");
+        let cond = edges[0]["if"].as_str().unwrap();
+        let go = |exit: &str, result: serde_json::Value| {
+            engine
+                .eval_bool(cond, &serde_json::json!({"exit": exit, "result": result}))
+                .unwrap()
+        };
+        assert!(go("success", serde_json::json!({"summary": "ok"})), "{id}");
+        assert!(!go("failure", serde_json::Value::Null), "{id}");
+        assert!(!go("success", serde_json::Value::Null), "{id}");
+        assert!(
+            !go("interrupted", serde_json::json!({"summary": "x"})),
+            "{id}"
+        );
+
+        let reason = t.workflow["nodes"]["failed"]["reason"].as_str().unwrap();
+        let render = |n: serde_json::Value| {
+            engine
+                .render(
+                    ez_workflow::expr::TemplateKind::Text,
+                    reason,
+                    &serde_json::json!({ "nodes": { node: n } }),
+                )
+                .unwrap()
+        };
+        let msg = render(serde_json::json!({"exit": "failure", "result": null,
+            "error": "git clone failed: No space left on device"}));
+        assert!(
+            msg.ends_with("git clone failed: No space left on device"),
+            "{msg}"
+        );
+        let msg = render(serde_json::json!({"exit": "failure", "result": null, "error": null}));
+        assert!(msg.ends_with("no result was submitted"), "{msg}");
+    }
+}
+
+/// `implement-labeled-issues` never renders a plan that was not submitted.
+#[test]
+fn implement_plan_failure_ends_failed() {
+    let templates: Vec<Template> = serde_json::from_str(TEMPLATES).unwrap();
+    let t = templates
+        .iter()
+        .find(|t| t.id == "implement-labeled-issues")
+        .unwrap();
+    let edges = t.workflow["nodes"]["plan"]["next"].as_array().unwrap();
+    assert_eq!(edges[0]["to"], "plan_failed");
+    let engine = Engine::new();
+    let cond = edges[0]["if"].as_str().unwrap();
+    let ev = |exit: &str, result: serde_json::Value| {
+        engine
+            .eval_bool(cond, &serde_json::json!({"exit": exit, "result": result}))
+            .unwrap()
+    };
+    assert!(ev("failure", serde_json::Value::Null));
+    assert!(ev("success", serde_json::Value::Null));
+    assert!(!ev("success", serde_json::json!({"plan": "p"})));
 }

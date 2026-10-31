@@ -65,7 +65,7 @@ fn stops_at_the_first_unknown_outcome() {
         panic!("{:?}", t.end)
     };
     assert_eq!(node, "triage");
-    assert_eq!(outputs, &["result", "git", "exit"]);
+    assert_eq!(outputs, &["result", "git", "exit", "error"]);
     assert_eq!(edges.len(), 2);
     assert_eq!(
         edges[0].condition.as_deref(),
