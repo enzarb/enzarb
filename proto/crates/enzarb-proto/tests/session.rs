@@ -228,6 +228,7 @@ fn debug_redacts_claude_tokens() {
             repo: None,
             resume: None,
             claude_token: Some(tok.clone()),
+            checkout: None,
         },
         Ctrl::CredentialCaptured {
             kind: CredentialKind::ClaudeOauth,
@@ -624,6 +625,7 @@ fn open_msg(channel: u32) -> Frame {
         repo: None,
         resume: None,
         claude_token: None,
+        checkout: None,
     })
     .unwrap()
 }

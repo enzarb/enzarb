@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use enzarb_proto::session::{ChannelHandle, Client, Events, Session, SessionError};
-use enzarb_proto::{ClientKind, open_error_code};
+use enzarb_proto::{ChatCheckout, ClientKind, open_error_code};
 use nix::errno::Errno;
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
@@ -1142,4 +1142,120 @@ async fn chat_repo_does_not_share_git_dir_with_the_job_clone() {
                 .is_none()
         }
     );
+}
+
+fn checkout(branch: &str, start_ref: Option<&str>) -> Option<ChatCheckout> {
+    Some(ChatCheckout {
+        branch: branch.into(),
+        start_ref: start_ref.map(String::from),
+    })
+}
+
+async fn open_on(s: &Server, session: &Session, co: Option<ChatCheckout>) -> Acp {
+    assert!(session.has_feature("chat_checkout"));
+    let ch = timeout(
+        T,
+        session.open_acp_checkout(Some(s.repo_url.clone()), None, None, co),
+    )
+    .await
+    .unwrap()
+    .expect("open_acp_checkout");
+    Acp::new(ch)
+}
+
+fn head(wt: &Path) -> String {
+    git_out(wt, &["rev-parse", "--abbrev-ref", "HEAD"]).1
+}
+
+/// Push a branch with `file` to the origin and fetch it into the job clone.
+fn push_origin_branch(s: &Server, branch: &str, file: &str) {
+    let origin = Path::new(s.repo_url.strip_prefix("file://").unwrap());
+    git(origin, &["checkout", "-q", "-b", branch]);
+    std::fs::write(origin.join(file), "x\n").unwrap();
+    git(origin, &["add", file]);
+    git(origin, &["commit", "-qm", branch]);
+    git(origin, &["checkout", "-q", "main"]);
+    git(&s.clone_dir(), &["fetch", "-q", "origin"]);
+}
+
+#[tokio::test]
+async fn chat_opens_on_a_pushed_run_branch() {
+    let s = start().await;
+    push_origin_branch(&s, "ez/triage/run-7", "run.txt");
+    let (session, _ev) = s.connect().await;
+    let mut acp = open_on(&s, &session, checkout("ez/triage/run-7", None)).await;
+    acp.start_session().await;
+    let wt = s.chat_worktrees()[0].clone();
+    assert_eq!(head(&wt), "ez/triage/run-7");
+    assert!(wt.join("run.txt").exists());
+}
+
+#[tokio::test]
+async fn chat_opens_on_a_pull_request_head_branch() {
+    let s = start().await;
+    push_origin_branch(&s, "feature/pr-head", "pr.txt");
+    let (session, _ev) = s.connect().await;
+    let co = checkout("feature/pr-head", Some("refs/heads/feature/pr-head"));
+    let mut acp = open_on(&s, &session, co).await;
+    acp.start_session().await;
+    let wt = s.chat_worktrees()[0].clone();
+    assert_eq!(head(&wt), "feature/pr-head");
+    assert!(wt.join("pr.txt").exists());
+}
+
+#[tokio::test]
+async fn chat_creates_a_new_branch_from_the_default_branch() {
+    let s = start().await;
+    let (session, _ev) = s.connect().await;
+    let mut acp = open_on(&s, &session, checkout("enzarb/issue-4", None)).await;
+    acp.start_session().await;
+    let wt = s.chat_worktrees()[0].clone();
+    assert_eq!(head(&wt), "enzarb/issue-4");
+    let main = git_out(&s.clone_dir(), &["rev-parse", "refs/remotes/origin/main"]).1;
+    assert_eq!(git_out(&wt, &["rev-parse", "HEAD"]).1, main);
+}
+
+#[tokio::test]
+async fn chat_opens_on_an_unpushed_run_branch_from_the_run_checkout() {
+    let s = start().await;
+    // `<ws>/tasks/<task>/<owner>/<repo>` matching the repo URL's last two segments
+    let owner = s.ws.parent().unwrap().file_name().unwrap().to_owned();
+    let run = s.ws.join("tasks/t1").join(owner).join("origin");
+    std::fs::create_dir_all(run.parent().unwrap()).unwrap();
+    git(&s.ws, &["clone", "-q", &s.repo_url, run.to_str().unwrap()]);
+    git(&run, &["checkout", "-q", "-b", "ez/triage/local-only"]);
+    std::fs::write(run.join("local.txt"), "x\n").unwrap();
+    git(&run, &["add", "local.txt"]);
+    git(&run, &["commit", "-qm", "local"]);
+    let (session, _ev) = s.connect().await;
+    let mut acp = open_on(&s, &session, checkout("ez/triage/local-only", None)).await;
+    acp.start_session().await;
+    let wt = s.chat_worktrees()[0].clone();
+    assert_eq!(head(&wt), "ez/triage/local-only");
+    assert!(wt.join("local.txt").exists());
+}
+
+#[tokio::test]
+async fn chat_rejects_an_invalid_checkout() {
+    let s = start().await;
+    let (session, _ev) = s.connect().await;
+    for co in [
+        checkout("../evil", None),
+        checkout("-rf", None),
+        checkout("a b", None),
+        checkout("ok", Some("--upload-pack=x")),
+        checkout("ok", Some("refs/tags/v1")),
+    ] {
+        let r = timeout(
+            T,
+            session.open_acp_checkout(Some(s.repo_url.clone()), None, None, co.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            r.err().unwrap().open_error_code(),
+            Some(open_error_code::INVALID_REQUEST),
+            "{co:?}"
+        );
+    }
 }

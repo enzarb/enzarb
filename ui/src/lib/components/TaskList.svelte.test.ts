@@ -4,6 +4,9 @@ import { render } from 'vitest-browser-svelte';
 import { defaultAction, type Task, type TaskList as Tasks } from '#lib/tasks.ts';
 import TaskList from './TaskList.svelte';
 
+// The chat bar in the detail connects on mount; here it just never gets a token.
+vi.mock('#lib/chat.remote.ts', () => ({ chatConnection: vi.fn(() => new Promise(() => {})) }));
+
 const base = { project: 'p', repo: 'o/r', at: '2026-10-30T12:00:00.000Z', runUrl: null };
 const tasks: Task[] = [
 	{
@@ -178,14 +181,12 @@ describe('TaskList', () => {
 			.toHaveAttribute('href', 'https://github.com/o/r/pull/4/files');
 	});
 
-	it('has a back control and a disabled chat bar in the detail', async () => {
+	it('has a back control and the chat bar in the detail', async () => {
 		render(TaskList, props({ tasks, notes: [] }, { selected: 'pr:o/r#4' }));
 		await expect
 			.element(page.getByRole('link', { name: 'All tasks' }))
 			.toHaveAttribute('href', '/tasks');
-		await expect
-			.element(page.getByPlaceholder('Chat with the agent about this task: coming next'))
-			.toBeDisabled();
+		await expect.element(page.getByTestId('task-chat-bar')).toBeInTheDocument();
 	});
 
 	it('ignores a stale selection', async () => {

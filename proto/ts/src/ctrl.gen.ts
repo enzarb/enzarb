@@ -3,6 +3,18 @@
 
 import type { SecretLike } from "./secret.js";
 
+export type ChatCheckout = { 
+/**
+ * Branch name (at most 200 bytes of `[A-Za-z0-9._/-]`, no `..`, not starting with `-`, `/` or `.`).
+ */
+branch: string, 
+/**
+ * Where to create `branch` from when the sandbox has no such branch (`refs/heads/<name>`; a
+ * `refs/pull/<n>/head` is accepted but only resolves when the sandbox already has it).
+ * Omitted: the default branch.
+ */
+start_ref?: string | null, };
+
 export type ClientKind = "ui" | "proxy" | "executor";
 
 export type CredentialKind = "claude_oauth";
@@ -33,7 +45,12 @@ resume?: string | null,
  * Optional per-user Claude token for this channel. Omitted when
  * absent; old peers ignore it.
  */
-claude_token?: SecretLike | null, } | { "type": "opened", channel: number, } | { "type": "open_error", channel: number, message: string, 
+claude_token?: SecretLike | null, 
+/**
+ * `acp` only: check this branch out in the chat's worktree. Send only after seeing
+ * `welcome.features` `chat_checkout`. Omitted when absent; old peers ignore it.
+ */
+checkout?: ChatCheckout | null, } | { "type": "opened", channel: number, } | { "type": "open_error", channel: number, message: string, 
 /**
  * Machine-readable reason (see [`open_error_code`]); unknown values
  * must be tolerated. Omitted when absent.

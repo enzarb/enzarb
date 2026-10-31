@@ -53,6 +53,10 @@ pub mod feature {
     pub const EZ_STEPS: &str = "ez_steps";
     /// `StepWorkspace.start_ref` is honoured. Implies [`STEPS`]; send it only after seeing it (an old server ignores the field and starts from `base`).
     pub const STEP_START_REF: &str = "step_start_ref";
+    /// `open.checkout` is honoured on `acp` opens: the chat's worktree checks out the given branch
+    /// instead of a fresh `enzarb/chat-<id>`. Send it only after seeing it (an old server ignores the field
+    /// and the chat works on a fresh branch).
+    pub const CHAT_CHECKOUT: &str = "chat_checkout";
     /// Client feature (`hello.features`): the client stores per-user Claude
     /// tokens from `credential_captured.token` and never relays them, and acks
     /// `legacy` captures. Only sandbox-proxy sends it.
@@ -91,6 +95,19 @@ pub mod open_error_code {
 
 /// Longest `open.repo` (bytes) senders may send and receivers must accept.
 pub const MAX_REPO_LEN: usize = 2048;
+/// `open.checkout` (`acp` only): the branch a chat works on, in the repo `open.repo` names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema), ts(optional_fields = nullable))]
+pub struct ChatCheckout {
+    /// Branch name (at most 200 bytes of `[A-Za-z0-9._/-]`, no `..`, not starting with `-`, `/` or `.`).
+    pub branch: String,
+    /// Where to create `branch` from when the sandbox has no such branch (`refs/heads/<name>`; a
+    /// `refs/pull/<n>/head` is accepted but only resolves when the sandbox already has it).
+    /// Omitted: the default branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_ref: Option<String>,
+}
+
 /// Longest `open.resume` (bytes) senders may send and receivers must accept.
 pub const MAX_RESUME_LEN: usize = 256;
 
@@ -345,6 +362,10 @@ pub enum Ctrl {
         /// absent; old peers ignore it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         claude_token: Option<Secret>,
+        /// `acp` only: check this branch out in the chat's worktree. Send only after seeing
+        /// `welcome.features` `chat_checkout`. Omitted when absent; old peers ignore it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checkout: Option<ChatCheckout>,
     },
     Opened {
         channel: u32,

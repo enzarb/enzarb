@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { E2E_PROJECT } from './constants.ts';
+import { AGENT_REPLY, E2E_PROJECT } from './constants.ts';
 import { installFakeSandbox } from './fake-sandbox.ts';
 import { E2E_FAILED_RUN_ID, E2E_WAIT_RUN_ID } from './stubs/tracks.ts';
 
@@ -31,7 +31,7 @@ test('lists what waits on a human; selecting shows readable links and the run', 
 		`/projects/${E2E_PROJECT}/runs/${E2E_WAIT_RUN_ID}`
 	);
 	await expect(detail.getByRole('button', { name: 'Stop for now' })).toBeVisible();
-	await expect(page.getByPlaceholder(/coming next/)).toBeDisabled();
+	await expect(page.getByPlaceholder(/Message the agent/)).toBeEnabled();
 	await expect(page.getByRole('link', { name: 'GitHub', exact: true })).toHaveCount(0);
 
 	// The selection survives a reload.
@@ -99,11 +99,26 @@ for (const size of [
 			.getByRole('link')
 			.click();
 		for (const el of [
-			page.getByPlaceholder(/coming next/),
+			page.getByPlaceholder(/Message the agent/),
 			page.getByRole('button', { name: 'Send' })
 		]) {
 			await expect(el).toBeVisible();
 			await expect(el).toBeInViewport({ ratio: 1 });
+		}
+		if (size.width >= 1280) {
+			// The detail fills the viewport: the chat bar sits right above the footer, and the
+			// page itself does not scroll.
+			const gap = await page.evaluate(() => {
+				const bar = document.querySelector('.ez-tasks__chat')!.getBoundingClientRect();
+				const footer = document.querySelector('.ez-footer')!.getBoundingClientRect();
+				return {
+					gap: footer.top - bar.bottom,
+					scrolls: document.documentElement.scrollHeight > window.innerHeight
+				};
+			});
+			expect(gap.gap).toBeGreaterThanOrEqual(0);
+			expect(gap.gap).toBeLessThan(24);
+			expect(gap.scrolls).toBe(false);
 		}
 	});
 }
@@ -121,4 +136,45 @@ test('on a phone the list and the detail stack, with a back control', async ({ p
 	await expect(page.getByRole('article', { name: /^Task:/ })).toBeVisible();
 	await page.getByRole('link', { name: 'All tasks' }).click();
 	await expect(page.getByRole('navigation', { name: 'Tasks' })).toBeVisible();
+});
+
+test('the chat bar chats on the task branch and carries the task context', async ({ page }) => {
+	const opens: { repo?: string | null; checkout?: unknown }[] = [];
+	await installFakeSandbox(page, { onOpen: (o) => opens.push(o) });
+	await page.goto(BASE);
+	await page
+		.getByRole('listitem', { name: /Pull requests to review/ })
+		.getByRole('link')
+		.click();
+	const box = page.getByPlaceholder(/Message the agent/);
+	await expect(box).toBeEnabled();
+	expect(opens[0].repo).toBe('https://github.com/e2e-org/app.git');
+	expect(opens[0].checkout).toMatchObject({ branch: expect.stringMatching(/^ez\//) });
+	await box.fill('Does this handle retries?');
+	await page.getByRole('button', { name: 'Send' }).click();
+	const log = page.getByRole('log', { name: 'Conversation' });
+	await expect(log).toContainText('Does this handle retries?');
+	await expect(log).toContainText(AGENT_REPLY);
+	// The conversation opened above the input, which stays in view.
+	await expect(box).toBeInViewport({ ratio: 1 });
+	await expect(
+		page.getByText('Changes stay in the sandbox until a run pushes them.')
+	).toBeVisible();
+
+	// Another task, another chat on its own branch.
+	await page.goto(`${BASE}?task=${encodeURIComponent(`run:${E2E_WAIT_RUN_ID}`)}`);
+	await expect(page.getByPlaceholder(/Message the agent/)).toBeEnabled();
+	const second = (opens.at(-1)?.checkout as { branch: string }).branch;
+	expect(second).toMatch(/^ez\//);
+	expect(second).not.toBe((opens[0].checkout as { branch: string }).branch);
+});
+
+test('a sandbox without chat_checkout asks for an update', async ({ page }) => {
+	await installFakeSandbox(page, { chatCheckout: false });
+	await page.goto(BASE);
+	await page
+		.getByRole('listitem', { name: /Pull requests to review/ })
+		.getByRole('link')
+		.click();
+	await expect(page.getByText('Needs an update', { exact: true })).toBeVisible();
 });

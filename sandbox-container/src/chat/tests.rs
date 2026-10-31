@@ -811,7 +811,11 @@ fn disabled_chat_has_no_feature() {
     };
     assert_eq!(
         ChatManager::new(cfg, Reaper::new(false), RepoLocks::default()).features(),
-        vec!["acp".to_string(), "file_read_chat".to_string()]
+        vec![
+            "acp".to_string(),
+            "file_read_chat".to_string(),
+            "chat_checkout".to_string()
+        ]
     );
 }
 

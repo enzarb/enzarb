@@ -210,6 +210,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 repo: None,
                 resume: None,
                 claude_token: None,
+                checkout: None,
             },
         ),
         (
@@ -223,6 +224,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 repo: None,
                 resume: None,
                 claude_token: None,
+                checkout: None,
             },
         ),
         (
@@ -236,6 +238,24 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 repo: Some("https://github.com/enzarb/enzarb-ui".into()),
                 resume: Some("sess_abc123".into()),
                 claude_token: None,
+                checkout: None,
+            },
+        ),
+        (
+            "open_acp_checkout",
+            Ctrl::Open {
+                channel: 3,
+                kind: ChannelKind::Acp,
+                cols: 0,
+                rows: 0,
+                command: None,
+                repo: Some("https://github.com/enzarb/enzarb".into()),
+                resume: None,
+                claude_token: None,
+                checkout: Some(ChatCheckout {
+                    branch: "ez/triage/run-7".into(),
+                    start_ref: Some("refs/heads/main".into()),
+                }),
             },
         ),
         (
@@ -249,6 +269,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 repo: None,
                 resume: None,
                 claude_token: None,
+                checkout: None,
             },
         ),
         (
@@ -262,6 +283,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 repo: None,
                 resume: None,
                 claude_token: Some(Secret::new("sk-ant-oat01-user")),
+                checkout: None,
             },
         ),
         ("opened", Ctrl::Opened { channel: 1 }),

@@ -295,11 +295,13 @@ export class Session implements ChannelHost {
    * Open an `acp` channel and wait for `opened`. Rejects with an `OpenError` (see `openCode`).
    *
    * Only call this when `session.features.has("acp")`: an old proxy closes the whole socket (1008) on an
-   * unknown `open.kind`. `repo` / `resume` longer than `MAX_REPO_LEN` / `MAX_RESUME_LEN` bytes are refused locally.
+   * unknown `open.kind`. `checkout` only when `session.features.has("chat_checkout")`. `repo` / `resume` longer than `MAX_REPO_LEN` / `MAX_RESUME_LEN` bytes are refused locally.
    * The result's streams carry ACP's newline-delimited JSON-RPC as raw bytes; pass them to
    * `ndJsonStream(byteChannel.writable, byteChannel.readable)` from `@agentclientprotocol/sdk`.
    */
-  async openAcp(opts: { repo?: string; resume?: string; claudeToken?: SecretLike } = {}): Promise<ByteChannel> {
+  async openAcp(
+    opts: { repo?: string; resume?: string; claudeToken?: SecretLike; checkout?: { branch: string; start_ref?: string } } = {},
+  ): Promise<ByteChannel> {
     this.alive();
     const enc = new TextEncoder();
     if (
@@ -316,6 +318,7 @@ export class Session implements ChannelHost {
     if (opts.repo !== undefined) m.repo = opts.repo;
     if (opts.resume !== undefined) m.resume = opts.resume;
     if (opts.claudeToken !== undefined) m.claude_token = toSecret(opts.claudeToken);
+    if (opts.checkout !== undefined) m.checkout = opts.checkout;
     this.sendCtrl(m);
     return new ByteChannel(await p);
   }

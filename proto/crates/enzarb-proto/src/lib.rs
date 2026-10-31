@@ -17,9 +17,9 @@ pub mod session;
 pub mod step;
 
 pub use ctrl::{
-    ChannelKind, ClientKind, CredentialKind, Ctrl, Direction, MAX_FILE_READ_BYTES, MAX_REPO_LEN,
-    MAX_RESUME_LEN, SandboxStats, Secret, Usage, close_reason, credential_scope, error_code,
-    feature, file_error_code, open_error_code, sanitize_features,
+    ChannelKind, ChatCheckout, ClientKind, CredentialKind, Ctrl, Direction, MAX_FILE_READ_BYTES,
+    MAX_REPO_LEN, MAX_RESUME_LEN, SandboxStats, Secret, Usage, close_reason, credential_scope,
+    error_code, feature, file_error_code, open_error_code, sanitize_features,
 };
 pub use flow::{FlowControl, FlowError};
 pub use frame::{

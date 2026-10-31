@@ -33,12 +33,16 @@ export interface FakeSandboxOptions {
 	noCredential?: boolean;
 	/** Files the sandbox serves to `file_read`, by path as requested (others answer `not_found`). */
 	files?: Record<string, string>;
+	/** Advertise `chat_checkout` (default true); false is a sandbox that needs an update. */
+	chatCheckout?: boolean;
+	/** Receives the `open` frame of every chat (`repo`, `checkout`, ...). */
+	onOpen?: (open: { repo?: string | null; checkout?: unknown; resume?: string | null }) => void;
 }
 
 /** Serve the sandbox mux websocket of every project on `page`. */
 export async function installFakeSandbox(page: Page, opts: FakeSandboxOptions = {}): Promise<void> {
 	await page.routeWebSocket(SANDBOX_MUX_URL, (ws) =>
-		serve(ws, opts.reply ?? AGENT_REPLY, opts.noCredential ?? false, opts.files ?? {})
+		serve(ws, opts.reply ?? AGENT_REPLY, opts.noCredential ?? false, opts.files ?? {}, opts)
 	);
 }
 
@@ -46,7 +50,8 @@ function serve(
 	ws: WebSocketRoute,
 	reply: string,
 	noCredential: boolean,
-	files: Record<string, string>
+	files: Record<string, string>,
+	opts: FakeSandboxOptions
 ): void {
 	const send = (f: Frame) => ws.send(Buffer.from(encodeFrame(f)));
 	const fail = (code: string, message: string) => send(ctrlFrame({ type: 'error', code, message }));
@@ -79,7 +84,12 @@ function serve(
 					ctrlFrame({
 						type: 'welcome',
 						version,
-						features: [Feature.Acp, Feature.FileRead, Feature.FileReadChat]
+						features: [
+							Feature.Acp,
+							Feature.FileRead,
+							Feature.FileReadChat,
+							...(opts.chatCheckout === false ? [] : [Feature.ChatCheckout])
+						]
 					})
 				);
 				return;
@@ -107,6 +117,7 @@ function serve(
 					);
 					return;
 				}
+				opts.onOpen?.(msg);
 				openAcp(msg.channel);
 				return;
 			case 'file_read': {

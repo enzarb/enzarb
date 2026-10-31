@@ -12,6 +12,8 @@
 	import { modeName } from '#lib/acp/reducer.ts';
 	import Notice from '#lib/components/ui/Notice.svelte';
 	import { chatConnection } from '#lib/chat.remote.ts';
+	import { NEEDS_UPDATE } from '#lib/acp/connection.ts';
+	import type { ChatCheckout } from '@enzarb/proto';
 	import ChatModeBadge from './ChatModeBadge.svelte';
 	import ChatModeSwitch from './ChatModeSwitch.svelte';
 	import ChatStatus from './ChatStatus.svelte';
@@ -20,15 +22,25 @@
 
 	let {
 		project,
+		repo,
+		checkout,
+		storeKey,
 		connect,
 		wrapFirst,
 		onSession,
 		onItems,
 		onBusy,
 		onUserSend,
-		hideContext
+		hideContext,
+		contextLabel
 	}: {
 		project: string;
+		/** Clone URL of the repository the chat works in (`open.repo`); default: the Project's first clone. */
+		repo?: string;
+		/** Check this branch out in the chat's worktree (`open.checkout`). Read once per mount. */
+		checkout?: ChatCheckout;
+		/** Where the ACP session id is kept; default the project name. Distinct per task. */
+		storeKey?: string;
 		/** Override the sandbox connection (tests); defaults to the chat's token + websocket path. */
 		connect?: ConnectionDeps['connect'];
 		/** Rewrites the first message sent in this mount (e.g. to prepend context). */
@@ -43,6 +55,8 @@
 		onUserSend?: () => void;
 		/** Splits a hidden context block off a user message (shown collapsed). */
 		hideContext?: (text: string) => { context: string; rest: string } | null;
+		/** The summary of the collapsed context block. */
+		contextLabel?: string;
 	} = $props();
 
 	let first = true;
@@ -80,9 +94,11 @@
 			untrack(() => onSession)?.(s);
 			return s;
 		},
-		initialSessionId: sessionStore.load(untrack(() => project)),
+		repo: untrack(() => repo),
+		checkout: untrack(() => checkout),
+		initialSessionId: sessionStore.load(untrack(() => storeKey ?? project)),
 		onSessionId: (id) => {
-			const name = untrack(() => project);
+			const name = untrack(() => storeKey ?? project);
 			if (id) sessionStore.save(name, id);
 			else sessionStore.clear(name);
 		},
@@ -114,7 +130,11 @@
 </script>
 
 <div class="ez-chat" data-phase={st.phase}>
-	{#if st.phase === 'unavailable'}
+	{#if st.phase === 'unavailable' && st.message === NEEDS_UPDATE}
+		<Notice tone="info" title="Needs an update">
+			{NEEDS_UPDATE}
+		</Notice>
+	{:else if st.phase === 'unavailable'}
 		<Notice tone="info" title="Chat not available">
 			This sandbox or its proxy is too old for chat. It becomes available once both are updated and
 			the sandbox has restarted.
@@ -142,6 +162,7 @@
 			items={st.chat.items}
 			epoch={st.epoch}
 			{hideContext}
+			{contextLabel}
 			onAnswer={chat.answer}
 			onAnswerQuestion={chat.answerQuestion}
 		/>

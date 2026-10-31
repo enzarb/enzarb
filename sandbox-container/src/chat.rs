@@ -56,7 +56,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use enzarb_proto::session::{ChannelHandle, ChannelSender, OpenRequest};
 use enzarb_proto::{
-    MAX_REPO_LEN, MAX_RESUME_LEN, close_code, close_reason, feature, open_error_code,
+    ChatCheckout, MAX_REPO_LEN, MAX_RESUME_LEN, close_code, close_reason, feature, open_error_code,
 };
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
@@ -74,6 +74,7 @@ use crate::exec::{self, CmdSpec, Ctl, LineSink, terminate};
 use crate::reaper::{ExitStatus, Reaper};
 use crate::repos::{RepoLocks, repo_dir_name};
 use crate::steps::SessionSink;
+use crate::steps::git::{valid_branch, valid_start_ref};
 use filter::{Filter, Out};
 
 /// Longest NDJSON line in either direction; longer closes the chat (`limit`).
@@ -203,9 +204,33 @@ pub fn valid_repo(s: &str) -> bool {
     !s.is_empty() && s.len() <= MAX_REPO_LEN && s.bytes().all(|b| b.is_ascii_graphic())
 }
 
+/// `open.checkout`: a branch name and an optional start ref, both as valid as a
+/// run's (`StepWorkspace.branch` / `.start_ref`).
+pub fn valid_checkout(c: &ChatCheckout) -> bool {
+    valid_branch(&c.branch) && c.start_ref.as_deref().is_none_or(valid_start_ref)
+}
+
 /// `open.resume`: an ACP session id (see [`filter::valid_session_id`]).
 pub fn valid_resume(s: &str) -> bool {
     s.len() <= MAX_RESUME_LEN && filter::valid_session_id(s)
+}
+
+/// `repo_dir_name` without its trailing `-<hash of the URL>`: `<owner>-<repo>`.
+fn dir_tail(name: &str) -> &str {
+    name.len().checked_sub(9).map_or(name, |n| &name[..n])
+}
+
+/// What [`ChatManager::init_chat_repo`] builds the chat repo from.
+struct Init<'a> {
+    /// The branch the worktree is on.
+    branch: &'a str,
+    /// `enzarb/chat-<id>`: where the clone keeps the chat's commits.
+    own_branch: &'a str,
+    resumed: bool,
+    /// Commit to start from (unused with `task_src`).
+    start: &'a str,
+    /// A run checkout and its branch to start from.
+    task_src: Option<(&'a Path, &'a str)>,
 }
 
 /// Splits a byte stream into lines of at most `cap` bytes.
@@ -488,6 +513,7 @@ impl ChatManager {
             vec![
                 feature::ACP.to_string(),
                 feature::FILE_READ_CHAT.to_string(),
+                feature::CHAT_CHECKOUT.to_string(),
             ]
         } else {
             Vec::new()
@@ -537,6 +563,9 @@ impl ChatManager {
         {
             return req
                 .reject_with_code(open_error_code::INVALID_REQUEST, "invalid repo or resume");
+        }
+        if req.checkout.as_ref().is_some_and(|c| !valid_checkout(c)) {
+            return req.reject_with_code(open_error_code::INVALID_REQUEST, "invalid checkout");
         }
         let conn = self.next.fetch_add(1, Ordering::Relaxed);
         let (stop_tx, stop_rx) = watch::channel(None);
@@ -823,31 +852,80 @@ impl ChatManager {
     /// (resume), else from the default branch. The chat never gets a `.git`
     /// that points into the clone jobs fetch and push from, so its config,
     /// hooks and refs are its own.
-    async fn create_worktree(&self, clone: &Path, chat_id: &str) -> Result<PathBuf, String> {
+    ///
+    /// With `checkout`, the worktree is on `checkout.branch` instead: from the
+    /// chat's saved commit (resume), else from a run checkout of the branch
+    /// under `<ws>/tasks/*/<owner>/<repo>` (an unpushed run branch), else
+    /// `origin/<branch>`, else `checkout.start_ref`, else the default branch.
+    /// Its commits are saved back as `enzarb/chat-<id>` like any chat's.
+    async fn create_worktree(
+        &self,
+        clone: &Path,
+        chat_id: &str,
+        repo: Option<&str>,
+        checkout: Option<&ChatCheckout>,
+    ) -> Result<PathBuf, String> {
         let wt = self.worktrees_dir().join(format!("chat-{chat_id}"));
-        let branch = format!("enzarb/chat-{chat_id}");
+        let own_branch = format!("enzarb/chat-{chat_id}");
+        let branch = checkout.map_or(own_branch.clone(), |c| c.branch.clone());
         let lock = self.locks.get(clone);
         let _g = lock.lock().await;
         let _ = crate::privs::create_dir_all(&self.worktrees_dir());
         let kept = self.harvest(clone, &wt).await;
         self.drop_chat_repo(&wt, kept);
         let _ = self.git(clone, &["worktree", "prune"]).await;
-        let resumed = self.rev(clone, &format!("refs/heads/{branch}")).await;
+        let resumed = self.rev(clone, &format!("refs/heads/{own_branch}")).await;
         let mut start = resumed.clone();
+        let mut task_src = None;
+        if let Some(c) = checkout
+            && start.is_none()
+        {
+            if let Some(dir) = self.find_task_checkout(repo, clone, &c.branch).await {
+                task_src = Some(dir);
+            } else {
+                start = self
+                    .rev(clone, &format!("refs/remotes/origin/{}", c.branch))
+                    .await;
+                if start.is_none()
+                    && let Some(b) = c
+                        .start_ref
+                        .as_deref()
+                        .and_then(|r| r.strip_prefix("refs/heads/"))
+                {
+                    start = self.rev(clone, &format!("refs/remotes/origin/{b}")).await;
+                }
+            }
+        }
         for r in [
             "refs/remotes/origin/HEAD",
             "refs/remotes/origin/main",
             "refs/remotes/origin/master",
             "HEAD",
         ] {
-            if start.is_some() {
+            if start.is_some() || task_src.is_some() {
                 break;
             }
             start = self.rev(clone, r).await;
         }
-        let start = start.ok_or("the clone has no commit to start from")?;
+        let start = match (start, &task_src) {
+            (Some(s), _) => s,
+            (None, Some(_)) => String::new(),
+            (None, None) => return Err("the clone has no commit to start from".into()),
+        };
         let res = self
-            .init_chat_repo(clone, &wt, &branch, resumed.is_some(), &start)
+            .init_chat_repo(
+                clone,
+                &wt,
+                &Init {
+                    branch: &branch,
+                    own_branch: &own_branch,
+                    resumed: resumed.is_some(),
+                    start: &start,
+                    task_src: task_src
+                        .as_deref()
+                        .map(|d| (d, checkout.map_or("", |c| &c.branch))),
+                },
+            )
             .await;
         if res.is_err() {
             let _ = std::fs::remove_dir_all(&wt);
@@ -855,14 +933,63 @@ impl ChatManager {
         res.map(|_| wt)
     }
 
-    async fn init_chat_repo(
+    /// The newest run checkout (`<ws>/tasks/<task>/<owner>/<repo>`) of the chat's
+    /// repo that has a local branch `branch`, where an unpushed run branch lives.
+    async fn find_task_checkout(
         &self,
+        repo: Option<&str>,
         clone: &Path,
-        wt: &Path,
         branch: &str,
-        resumed: bool,
-        start: &str,
-    ) -> Result<(), String> {
+    ) -> Option<PathBuf> {
+        let want = repo
+            .map(repo_dir_name)
+            .or_else(|| clone.file_name().map(|n| n.to_string_lossy().into_owned()))?;
+        let mut found: Vec<(SystemTime, PathBuf)> = Vec::new();
+        for task in std::fs::read_dir(self.cfg.workspace.join("tasks"))
+            .ok()?
+            .flatten()
+        {
+            for owner in std::fs::read_dir(task.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                for r in std::fs::read_dir(owner.path())
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                {
+                    let name = format!(
+                        "{}/{}",
+                        owner.file_name().to_string_lossy(),
+                        r.file_name().to_string_lossy()
+                    );
+                    let p = r.path();
+                    if dir_tail(&repo_dir_name(&name)) == dir_tail(&want) && p.join(".git").is_dir()
+                    {
+                        let m = std::fs::metadata(&p)
+                            .and_then(|m| m.modified())
+                            .unwrap_or(UNIX_EPOCH);
+                        found.push((m, p));
+                    }
+                }
+            }
+        }
+        found.sort_by_key(|f| std::cmp::Reverse(f.0));
+        for (_, p) in found {
+            if self
+                .rev(&p, &format!("refs/heads/{branch}"))
+                .await
+                .is_some()
+            {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    async fn init_chat_repo(&self, clone: &Path, wt: &Path, i: &Init<'_>) -> Result<(), String> {
+        let (branch, resumed, start) = (i.branch, i.resumed, i.start);
         let w = wt.to_string_lossy().into_owned();
         let c = clone.to_string_lossy().into_owned();
         self.git_ok(&self.worktrees_dir(), &["init", "-q", "--template=", &w])
@@ -875,7 +1002,7 @@ impl ChatManager {
                     .and_then(|()| crate::privs::own(&f))
             })
             .map_err(|e| format!("cannot link the clone's objects: {e}"))?;
-        let own = format!("+refs/heads/{branch}:refs/heads/{branch}");
+        let own = format!("+refs/heads/{0}:refs/heads/{0}", i.own_branch);
         let mut args = vec![
             "fetch",
             "-q",
@@ -900,6 +1027,19 @@ impl ChatManager {
                 self.git_ok(wt, &["remote", "add", "origin", &url]).await?;
             }
         }
+        // An unpushed run branch: copy it out of the run's checkout (a local,
+        // token-free fetch; the chat repo gets its own objects).
+        let task_ref = "refs/remotes/enzarb-task/head";
+        let start = match i.task_src {
+            Some((dir, b)) => {
+                let d = dir.to_string_lossy().into_owned();
+                let spec = format!("+refs/heads/{b}:{task_ref}");
+                self.git_ok(wt, &["fetch", "-q", "--no-tags", "--", &d, &spec])
+                    .await?;
+                task_ref
+            }
+            None => start,
+        };
         self.git_ok(wt, &["checkout", "-q", "-B", branch, start])
             .await
     }
@@ -951,7 +1091,9 @@ impl ChatManager {
         }
         let branch = format!("refs/heads/enzarb/chat-{id}");
         let w = wt.to_string_lossy().into_owned();
-        let spec = format!("+{branch}:{branch}");
+        // The chat may be on a checked-out branch (`open.checkout`): keep its HEAD
+        // under the chat's own name, so it never touches the clone's other branches.
+        let spec = format!("+HEAD:{branch}");
         if let Err(e) = self
             .git_ok(clone, &["fetch", "-q", "--no-tags", "--", &w, &spec])
             .await
@@ -1079,7 +1221,10 @@ impl ChatManager {
         if stop.borrow().is_some() {
             return req.reject("the chat was closed while starting");
         }
-        let wt = match self.create_worktree(&clone, &chat_id).await {
+        let wt = match self
+            .create_worktree(&clone, &chat_id, req.repo.as_deref(), req.checkout.as_ref())
+            .await
+        {
             Ok(w) => w,
             Err(e) => {
                 tracing::warn!(chat = %chat_id, error = %e, "cannot create chat worktree");

@@ -3068,29 +3068,40 @@ textarea.ez-control {
 		margin: 0;
 	}
 
+	// The slot keeps its height; the chat (`.ez-taskchat`) is anchored to its bottom and grows
+	// upward over the detail.
 	&__chat {
+		position: relative;
 		flex: none;
 		height: 6.5rem;
 		border-top: 1px solid var(--border, currentColor);
 		padding-top: var(--space-2, 0.5rem);
 	}
 
-	&__chatbar {
-		display: flex;
-		gap: var(--space-2, 0.5rem);
-		height: 100%;
-	}
-
-	&__chatinput {
+	// In a project tab the shell already is the viewport: fill what is left, so the detail scrolls
+	// (not the page) and the chat bar sits right above the footer.
+	.ez-tabnav-panel > & {
 		flex: 1;
-		min-width: 0;
-		resize: none;
-		font: inherit;
+		min-height: 20rem;
+		grid-template-rows: minmax(0, 1fr);
+		align-items: stretch;
 	}
 
-	&__chatactions {
+	.ez-tabnav-panel > & &__sidebar {
+		max-height: none;
+		min-height: 0;
+	}
+
+	.ez-tabnav-panel > & &__pane {
 		display: flex;
-		align-items: flex-end;
+		flex-direction: column;
+		min-height: 0;
+	}
+
+	.ez-tabnav-panel > & &__detail {
+		flex: 1;
+		height: auto;
+		min-height: 0;
 	}
 
 	@media (max-width: 48rem) {
@@ -3098,6 +3109,16 @@ textarea.ez-control {
 
 		&__sidebar {
 			max-height: none;
+		}
+
+		// The page scrolls on a phone: undo the filling layout.
+		.ez-tabnav-panel > & {
+			flex: none;
+			grid-template-rows: none;
+		}
+
+		.ez-tabnav-panel > & &__detail {
+			flex: none;
 		}
 
 		&[data-selected='true'] &__sidebar {
@@ -3527,4 +3548,66 @@ textarea.ez-control {
 	background: var(--ez-border);
 	color: var(--ez-text);
 	font-size: 0.8em;
+}
+
+// The chat under a task: the composer is always visible, the transcript opens upward.
+.ez-taskchat {
+	position: absolute;
+	right: 0;
+	bottom: 0;
+	left: 0;
+	z-index: 2;
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-1);
+	max-height: min(30rem, 70dvh);
+	padding-top: var(--ez-space-1);
+	background: var(--ez-bg);
+
+	&__bar {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--ez-space-2);
+	}
+
+	&__note {
+		font-size: 0.8125rem;
+	}
+
+	.ez-chat {
+		min-height: 0;
+		gap: var(--ez-space-1);
+	}
+
+	// Input and Send on one row.
+	.ez-chat-composer {
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: end;
+
+		&__input {
+			min-height: 2.75rem;
+			height: 2.75rem;
+			resize: none;
+		}
+
+		> :not(.ez-sr-only, textarea, .ez-chat-composer__actions) {
+			grid-column: 1 / -1;
+		}
+	}
+
+	&[data-open='false'] .ez-chat-header,
+	&[data-open='false'] .ez-chat-log {
+		display: none;
+	}
+
+	&[data-open='true'] {
+		border: var(--ez-border-width) solid var(--ez-border);
+		border-radius: var(--ez-radius-md);
+		padding: var(--ez-space-2);
+	}
+
+	&[data-open='true'] .ez-chat-log {
+		max-height: 20rem;
+	}
 }

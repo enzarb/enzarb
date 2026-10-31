@@ -16,9 +16,9 @@ use super::channel::{Chan, ChannelHandle, lock};
 use super::handshake::{client_handshake_offering, server_handshake_with_features};
 use super::{HandshakeError, SessionEnd, SessionError};
 use crate::{
-    ChannelKind, ClientKind, CredentialKind, Ctrl, Frame, FrameType, MAX_REPO_LEN, MAX_RESUME_LEN,
-    SUPPORTED_VERSIONS, Secret, StepFinished, StepPhase, StepStart, close_code, error_code,
-    open_error_code,
+    ChannelKind, ChatCheckout, ClientKind, CredentialKind, Ctrl, Frame, FrameType, MAX_REPO_LEN,
+    MAX_RESUME_LEN, SUPPORTED_VERSIONS, Secret, StepFinished, StepPhase, StepStart, close_code,
+    error_code, open_error_code,
 };
 
 /// Which side of the protocol a session plays.
@@ -123,6 +123,8 @@ pub struct OpenRequest {
     pub resume: Option<String>,
     /// Per-user Claude token sent with the open, if any. Never log it.
     pub claude_token: Option<Secret>,
+    /// `acp`: branch to check out in the chat's worktree.
+    pub checkout: Option<ChatCheckout>,
     decided: bool,
 }
 
@@ -410,6 +412,7 @@ impl Inner {
                     repo,
                     resume,
                     claude_token,
+                    checkout,
                 },
             ) => {
                 if kind == ChannelKind::Unknown {
@@ -461,6 +464,7 @@ impl Inner {
                     repo,
                     resume,
                     claude_token,
+                    checkout,
                     decided: false,
                 }));
             }
@@ -990,8 +994,17 @@ impl Session {
         rows: u16,
         command: Option<Vec<String>>,
     ) -> Result<ChannelHandle, SessionError> {
-        self.open_kind(ChannelKind::Pty, cols, rows, command, None, None, None)
-            .await
+        self.open_kind(
+            ChannelKind::Pty,
+            cols,
+            rows,
+            command,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
     }
 
     /// (client) Open an `acp` channel (ACP's newline-delimited JSON-RPC as a
@@ -1015,7 +1028,7 @@ impl Session {
                 message: "repo or resume too long".into(),
             });
         }
-        self.open_kind(ChannelKind::Acp, 0, 0, None, repo, resume, None)
+        self.open_kind(ChannelKind::Acp, 0, 0, None, repo, resume, None, None)
             .await
     }
 
@@ -1027,6 +1040,19 @@ impl Session {
         resume: Option<String>,
         claude_token: Option<Secret>,
     ) -> Result<ChannelHandle, SessionError> {
+        self.open_acp_checkout(repo, resume, claude_token, None)
+            .await
+    }
+
+    /// Like [`open_acp_with_token`](Self::open_acp_with_token), also sending `open.checkout`. Only after
+    /// the server advertised `chat_checkout`.
+    pub async fn open_acp_checkout(
+        &self,
+        repo: Option<String>,
+        resume: Option<String>,
+        claude_token: Option<Secret>,
+        checkout: Option<ChatCheckout>,
+    ) -> Result<ChannelHandle, SessionError> {
         if repo.as_ref().is_some_and(|r| r.len() > MAX_REPO_LEN)
             || resume.as_ref().is_some_and(|r| r.len() > MAX_RESUME_LEN)
         {
@@ -1035,8 +1061,17 @@ impl Session {
                 message: "repo or resume too long".into(),
             });
         }
-        self.open_kind(ChannelKind::Acp, 0, 0, None, repo, resume, claude_token)
-            .await
+        self.open_kind(
+            ChannelKind::Acp,
+            0,
+            0,
+            None,
+            repo,
+            resume,
+            claude_token,
+            checkout,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1049,6 +1084,7 @@ impl Session {
         repo: Option<String>,
         resume: Option<String>,
         claude_token: Option<Secret>,
+        checkout: Option<ChatCheckout>,
     ) -> Result<ChannelHandle, SessionError> {
         self.require(Role::Client)?;
         let (tx, rx) = oneshot::channel();
@@ -1070,6 +1106,7 @@ impl Session {
             repo,
             resume,
             claude_token,
+            checkout,
         })?;
         match rx.await {
             Ok(Ok(())) => Ok(ChannelHandle::new(chan)),
