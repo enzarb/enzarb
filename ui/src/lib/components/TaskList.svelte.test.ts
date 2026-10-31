@@ -38,7 +38,9 @@ const tasks: Task[] = [
 		title: 'Fix crash',
 		githubUrl: 'https://github.com/o/r/pull/4',
 		branch: 'ez/fix/abc',
-		draft: false
+		draft: false,
+		openedBy: { id: '1a2b3c4d5e6f', workflow: 'implement-labeled-issues' },
+		runUrl: '/projects/p/runs/1a2b3c4d5e6f'
 	},
 	{
 		...base,
@@ -58,15 +60,21 @@ const props = (list: Tasks | undefined, over = {}) => ({
 	implement: vi.fn(async () => ({ ok: true, message: 'Started.', runId: 'abcdef1234567' })),
 	retryRun: vi.fn(async () => ({ ok: true, message: 'Restarted.', runId: null })),
 	stop: vi.fn(async () => ({ ok: true, message: 'Stopping.', runId: null })),
+	answerPlan: vi.fn(async () => ({
+		ok: true,
+		message: 'Plan approved: implementation started.',
+		runId: 'r1aaaaaaaa'
+	})),
+	mergePull: vi.fn(async () => ({ ok: true, message: 'Approved and merged #4.', steps: [] })),
 	...over
 });
 
 describe('defaultAction', () => {
-	it('is Implement, Retry, Stop for now and Open diff by kind', () => {
+	it('is Implement, Retry, Stop for now and Approve & merge by kind', () => {
 		expect(tasks.map((t) => defaultAction(t).label)).toEqual([
 			'Stop for now',
 			'Retry',
-			'Open diff',
+			'Approve & merge',
 			'Implement'
 		]);
 	});
@@ -170,12 +178,137 @@ describe('TaskList', () => {
 		expect(wait.stop).toHaveBeenCalledWith(tasks[0]);
 	});
 
-	it('shows a pull request with its branch and an Open diff link', async () => {
-		render(TaskList, props({ tasks, notes: [] }, { selected: 'pr:o/r#4' }));
+	const files = [
+		{
+			filename: 'src/a.ts',
+			status: 'modified',
+			additions: 1,
+			deletions: 1,
+			patch: '@@ -1,2 +1,2 @@\n keep\n-old\n+new'
+		},
+		{ filename: 'logo.png', status: 'added', additions: 0, deletions: 0 },
+		{ filename: 'big.ts', status: 'added', additions: 5000, deletions: 0 }
+	];
+	const review = {
+		pull: {
+			number: 4,
+			title: 'Fix crash',
+			url: '',
+			draft: false,
+			headSha: 'abc1234',
+			mergeable: true,
+			mergeableState: 'clean'
+		},
+		files,
+		filesTruncated: false,
+		checks: [
+			{ name: 'build', status: 'completed', conclusion: 'success', url: '' },
+			{ name: 'lint', status: 'completed', conclusion: 'failure', url: '' },
+			{ name: 'e2e', status: 'in_progress', conclusion: null, url: '' }
+		],
+		notes: {
+			html: '<p><strong>Looks good</strong></p>',
+			run: { id: '8888888888', workflow: 'review-pull-requests' },
+			source: 'run' as const
+		},
+		problems: []
+	};
+
+	it('shows a pull request: notes with run link, checks, inline diff, and the run that opened it', async () => {
+		render(TaskList, props({ tasks, notes: [] }, { selected: 'pr:o/r#4', review }));
 		await expect.element(page.getByText('ez/fix/abc')).toBeVisible();
 		await expect
-			.element(page.getByRole('link', { name: 'Open diff' }))
-			.toHaveAttribute('href', 'https://github.com/o/r/pull/4/files');
+			.element(page.getByRole('link', { name: 'implement-labeled-issues #1a2b3c4d' }))
+			.toHaveAttribute('href', '/projects/p/runs/1a2b3c4d5e6f');
+		await expect.element(page.getByTestId('review-notes')).toHaveTextContent('Looks good');
+		await expect
+			.element(page.getByRole('link', { name: 'review-pull-requests #88888888' }))
+			.toBeVisible();
+		await expect
+			.element(page.getByTestId('checks-summary'))
+			.toHaveTextContent('1 passed, 1 failed (lint), 1 pending');
+		await expect.element(page.getByText('src/a.ts')).toBeVisible();
+		const added = document.querySelector('.ez-diff__line--add');
+		const removed = document.querySelector('.ez-diff__line--del');
+		expect(added?.textContent).toContain('new');
+		expect(removed?.textContent).toContain('old');
+		expect(document.querySelectorAll('.ez-diff__line--add .ez-diff__no')[1]?.textContent).toBe('2');
+		expect(document.body.textContent).toContain('Too large to show inline');
+		await expect.element(page.getByRole('link', { name: 'Open diff' })).not.toBeInTheDocument();
+	});
+
+	it('Approve & merge runs the merge and shows the steps', async () => {
+		const p = props(
+			{ tasks, notes: [] },
+			{
+				selected: 'pr:o/r#4',
+				review,
+				mergePull: vi.fn(async () => ({
+					ok: false,
+					message: 'Not merged. Checks are failing: lint.',
+					steps: [
+						{ id: 'access', label: 'Check your write access', result: 'done' },
+						{
+							id: 'status',
+							label: 'Check mergeability and checks',
+							result: 'failed',
+							message: 'Not merged. Checks are failing: lint.'
+						},
+						{ id: 'approve', label: 'Approve the pull request', result: 'skipped' },
+						{ id: 'merge', label: 'Squash and merge', result: 'skipped' }
+					]
+				}))
+			}
+		);
+		render(TaskList, p);
+		await page.getByRole('button', { name: 'Approve & merge' }).click();
+		expect(p.mergePull).toHaveBeenCalledWith(tasks[2], 'abc1234');
+		await expect
+			.element(page.getByRole('list', { name: 'Approve and merge progress' }))
+			.toBeVisible();
+		await expect.element(page.getByText('Checks are failing: lint.').first()).toBeVisible();
+	});
+
+	const planTask = tasks[0]!;
+	it('shows the plan of a waiting run; Approve and Revise answer it', async () => {
+		const p = props(
+			{ tasks, notes: [] },
+			{ selected: 'run:r1', plan: { html: '<h2>Plan</h2><p>Do the thing</p>' }, run: null }
+		);
+		render(TaskList, p);
+		await expect.element(page.getByTestId('plan-body')).toHaveTextContent('Do the thing');
+		await page.getByRole('button', { name: 'Revise' }).click();
+		await page.getByLabelText('What should change in the plan?').fill('also add docs');
+		await page.getByRole('button', { name: 'Send revision' }).click();
+		expect(p.answerPlan).toHaveBeenCalledWith(planTask, 'revise', 'also add docs');
+		await page.getByRole('button', { name: 'Approve', exact: true }).click();
+		expect(p.answerPlan).toHaveBeenCalledWith(planTask, 'approve', undefined);
+		await expect
+			.element(page.getByTestId('task-done'))
+			.toHaveTextContent('Plan approved: implementation started.');
+	});
+
+	it('shows a failed answer without confirming it', async () => {
+		const p = props(
+			{ tasks, notes: [] },
+			{
+				selected: 'run:r1',
+				plan: { html: '<p>x</p>' },
+				run: null,
+				answerPlan: vi.fn(async () => ({ ok: false, message: 'The run is no longer waiting.' }))
+			}
+		);
+		render(TaskList, p);
+		await page.getByRole('button', { name: 'Approve', exact: true }).click();
+		await expect.element(page.getByRole('alert')).toHaveTextContent('no longer waiting');
+	});
+
+	it('keeps Stop for a wait without a plan', async () => {
+		render(TaskList, props({ tasks, notes: [] }, { selected: 'run:r1', run: null }));
+		await expect.element(page.getByRole('button', { name: 'Stop for now' })).toBeVisible();
+		await expect
+			.element(page.getByRole('button', { name: 'Approve', exact: true }))
+			.not.toBeInTheDocument();
 	});
 
 	it('has a back control and a disabled chat bar in the detail', async () => {

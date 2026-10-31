@@ -1,5 +1,7 @@
 import type { RepoPermissions } from './github-app.ts';
 import { githubFetch } from './github-app.ts';
+import type { CheckRun, CommitStatusState, PullState } from '#lib/pull-review.ts';
+import type { PullFile } from '#lib/patch.ts';
 
 /**
  * The GitHub reads behind the Tasks page: open pull requests from `ez/*` branches and open issues
@@ -40,6 +42,31 @@ export interface GithubReads {
 	issues(repo: string, label: string): Promise<{ items: OpenIssue[]; note?: string }>;
 	/** Numbers of every open issue and pull request; `open` is null when GitHub could not tell. */
 	openSubjects(repo: string): Promise<{ open: Set<number> | null; note?: string }>;
+	/** One pull request (`fresh`: skip the cache, for merge decisions). Null when unreadable. */
+	pull(
+		repo: string,
+		n: number,
+		opts?: { fresh?: boolean }
+	): Promise<{ pull: PullState | null; note?: string }>;
+	/** Changed files with their patches (up to 300; `truncated` when there are more). */
+	pullFiles(
+		repo: string,
+		n: number
+	): Promise<{ items: PullFile[]; truncated?: boolean; note?: string }>;
+	/** Check runs of a commit. */
+	checkRuns(
+		repo: string,
+		sha: string,
+		opts?: { fresh?: boolean }
+	): Promise<{ items: CheckRun[]; truncated?: boolean; note?: string }>;
+	/** Combined legacy commit status: `none` when the commit has no statuses. Needs `statuses: read`. */
+	commitStatus(
+		repo: string,
+		sha: string,
+		opts?: { fresh?: boolean }
+	): Promise<{ state: CommitStatusState | null; note?: string }>;
+	/** Bodies of the comments on an issue or pull request that carry the `ez-tracks` marker, oldest first. */
+	markedComments(repo: string, n: number): Promise<{ items: string[]; note?: string }>;
 }
 
 export interface GithubReadsDeps {
@@ -87,16 +114,19 @@ export function createGithubReads({
 		repo: string,
 		perms: RepoPermissions,
 		path: string,
-		pick: (raw: Record<string, unknown>) => T | null
+		pick: (raw: Record<string, unknown>) => T | null,
+		opts: { field?: string; fresh?: boolean } = {}
 	): Promise<{ items: T[]; note?: string; truncated?: boolean }> {
 		const key = `${repo.toLowerCase()}\0${path}`;
 		const hit = cache.get(key);
-		if (hit && now() - hit.at < TTL_MS)
+		if (!opts.fresh && hit && now() - hit.at < TTL_MS)
 			return { items: hit.value as T[], truncated: hit.truncated };
 		const stale = (note: string) => ({ items: (hit?.value ?? []) as T[], note });
 		if (now() < blockedUntil)
 			return stale(`GitHub rate limit: ${repo} is shown from memory until it lifts`);
-		let p = inflight.get(key) as
+		// A fresh read never joins a non-fresh request in flight (which may serve cached data).
+		const flightKey = opts.fresh ? `${key}\0fresh` : key;
+		let p = inflight.get(flightKey) as
 			Promise<{ items: T[]; note?: string; truncated?: boolean }> | undefined;
 		if (!p) {
 			p = (async () => {
@@ -124,8 +154,15 @@ export function createGithubReads({
 					if (res.status === 401) invalidate(repo, perms);
 					if (!res.ok) return stale(`${repo}: GitHub answered ${res.status}`);
 					const body = (await res.json()) as unknown;
-					if (Array.isArray(body))
-						for (const raw of body) {
+					const arr = Array.isArray(body)
+						? body
+						: opts.field && Array.isArray((body as Record<string, unknown>)?.[opts.field])
+							? ((body as Record<string, unknown>)[opts.field] as unknown[])
+							: body && typeof body === 'object'
+								? [body]
+								: [];
+					if (arr.length)
+						for (const raw of arr) {
 							const item = pick(raw as Record<string, unknown>);
 							if (item) out.push(item);
 						}
@@ -135,8 +172,8 @@ export function createGithubReads({
 				const truncated = url !== null;
 				cache.set(key, { at: now(), value: out, truncated });
 				return { items: out, truncated };
-			})().finally(() => inflight.delete(key));
-			inflight.set(key, p);
+			})().finally(() => inflight.delete(flightKey));
+			inflight.set(flightKey, p);
 		}
 		return p;
 	}
@@ -144,7 +181,84 @@ export function createGithubReads({
 	const str = (v: unknown) => (typeof v === 'string' ? v : '');
 	const enc = (repo: string) => repo.split('/').map(encodeURIComponent).join('/');
 
+	const num = (v: unknown) => (typeof v === 'number' ? v : 0);
+
 	return {
+		pull: async (repo, n, opts) => {
+			const r = await list<PullState>(
+				repo,
+				{ pull_requests: 'read' },
+				`/repos/${enc(repo)}/pulls/${n}`,
+				(raw) => {
+					const sha = str((raw.head as { sha?: unknown } | undefined)?.sha);
+					if (typeof raw.number !== 'number' || !sha) return null;
+					return {
+						number: raw.number,
+						title: str(raw.title),
+						url: str(raw.html_url),
+						draft: raw.draft === true,
+						headSha: sha,
+						mergeable: typeof raw.mergeable === 'boolean' ? raw.mergeable : null,
+						mergeableState: str(raw.mergeable_state)
+					};
+				},
+				{ fresh: opts?.fresh }
+			);
+			return { pull: r.items[0] ?? null, note: r.note };
+		},
+		pullFiles: (repo, n) =>
+			list<PullFile>(
+				repo,
+				{ pull_requests: 'read' },
+				`/repos/${enc(repo)}/pulls/${n}/files`,
+				(r) =>
+					str(r.filename)
+						? {
+								filename: str(r.filename),
+								status: str(r.status),
+								additions: num(r.additions),
+								deletions: num(r.deletions),
+								...(typeof r.patch === 'string' ? { patch: r.patch } : {})
+							}
+						: null
+			),
+		checkRuns: (repo, sha, opts) =>
+			list<CheckRun>(
+				repo,
+				{ checks: 'read' },
+				`/repos/${enc(repo)}/commits/${encodeURIComponent(sha)}/check-runs`,
+				(r) => ({
+					name: str(r.name),
+					status: str(r.status),
+					conclusion: typeof r.conclusion === 'string' ? r.conclusion : null,
+					url: str(r.html_url)
+				}),
+				{ field: 'check_runs', fresh: opts?.fresh }
+			),
+		commitStatus: async (repo, sha, opts) => {
+			const r = await list<CommitStatusState>(
+				repo,
+				{ statuses: 'read' },
+				`/repos/${enc(repo)}/commits/${encodeURIComponent(sha)}/status`,
+				(raw) => {
+					if (num(raw.total_count) === 0) return 'none';
+					const s = str(raw.state);
+					return s === 'success' || s === 'failure' || s === 'error' || s === 'pending' ? s : null;
+				},
+				{ fresh: opts?.fresh }
+			);
+			if (r.note) return { state: null, note: r.note };
+			return r.items[0]
+				? { state: r.items[0] }
+				: { state: null, note: 'The commit status was unreadable' };
+		},
+		markedComments: (repo, n) =>
+			list<string>(
+				repo,
+				{ pull_requests: 'read' },
+				`/repos/${enc(repo)}/issues/${n}/comments`,
+				(r) => (str(r.body).includes('<!-- ez-tracks:') ? str(r.body) : null)
+			),
 		openSubjects: async (repo) => {
 			const r = await list<number>(
 				repo,

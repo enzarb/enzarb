@@ -1,7 +1,12 @@
 import { expect, test } from '@playwright/test';
 import { E2E_PROJECT } from './constants.ts';
 import { installFakeSandbox } from './fake-sandbox.ts';
-import { E2E_FAILED_RUN_ID, E2E_WAIT_RUN_ID } from './stubs/tracks.ts';
+import {
+	E2E_FAILED_RUN_ID,
+	E2E_PLAN_REVISE_RUN_ID,
+	E2E_PLAN_RUN_ID,
+	E2E_WAIT_RUN_ID
+} from './stubs/tracks.ts';
 
 // The Tasks pages against the real remote functions; tracks and the GitHub reads are stubs
 // (e2e/stubs/tracks.ts, tasks-github.ts). Master-detail: the list selects through `?task=`, the
@@ -13,11 +18,13 @@ test('lists what waits on a human; selecting shows readable links and the run', 
 }) => {
 	await installFakeSandbox(page);
 	await page.goto(BASE);
-	await expect(page.getByRole('listitem', { name: /Waiting for you/ })).toContainText('waiting');
+	await expect(page.getByRole('listitem', { name: /Waiting for you: ask-first/ })).toContainText(
+		'waiting'
+	);
 	await expect(page.getByRole('listitem', { name: /Failed runs/ })).toContainText('timeout');
 
 	await page
-		.getByRole('listitem', { name: /Waiting for you/ })
+		.getByRole('listitem', { name: /Waiting for you: ask-first/ })
 		.getByRole('link')
 		.click();
 	await expect(page).toHaveURL(new RegExp(`task=run%3A${E2E_WAIT_RUN_ID}`));
@@ -39,16 +46,17 @@ test('lists what waits on a human; selecting shows readable links and the run', 
 	await expect(page.getByRole('article', { name: /^Task:/ })).toBeVisible();
 
 	await page
-		.getByRole('listitem', { name: /Pull requests to review/ })
+		.getByRole('listitem', { name: /Pull requests to review: Fix #7/ })
 		.getByRole('link')
 		.click();
 	await expect(page.getByRole('link', { name: 'app#50', exact: true }).first()).toHaveAttribute(
 		'href',
 		'https://github.com/e2e-org/app/pull/50'
 	);
-	await expect(page.getByRole('link', { name: 'Open diff' })).toHaveAttribute(
+	// The run that opened it reads like any run link.
+	await expect(page.getByRole('link', { name: 'fix-issue #11111111' })).toHaveAttribute(
 		'href',
-		'https://github.com/e2e-org/app/pull/50/files'
+		`/projects/${E2E_PROJECT}/runs/11111111-1111-4111-8111-111111111111`
 	);
 	// The top-level navigation shows the count.
 	await expect(page.getByRole('link', { name: /^Tasks, \d+ waiting$/ })).toBeVisible();
@@ -78,7 +86,7 @@ test('Retry restarts a failed run and Stop for now ends a wait', async ({ page }
 	await expect(page.getByRole('listitem', { name: /Failed runs/ })).toHaveCount(0);
 	// Stop is idempotent in the stub; the page still answers.
 	await page
-		.getByRole('listitem', { name: /Waiting for you/ })
+		.getByRole('listitem', { name: /Waiting for you: ask-first/ })
 		.getByRole('link')
 		.click();
 	await page.getByRole('button', { name: 'Stop for now' }).click();
@@ -95,7 +103,7 @@ for (const size of [
 		await installFakeSandbox(page);
 		await page.goto(BASE);
 		await page
-			.getByRole('listitem', { name: /Pull requests to review/ })
+			.getByRole('listitem', { name: /Pull requests to review: Fix #7/ })
 			.getByRole('link')
 			.click();
 		for (const el of [
@@ -114,11 +122,89 @@ test('on a phone the list and the detail stack, with a back control', async ({ p
 	await page.goto(BASE);
 	await expect(page.getByRole('navigation', { name: 'Tasks' })).toBeVisible();
 	await page
-		.getByRole('listitem', { name: /Pull requests to review/ })
+		.getByRole('listitem', { name: /Pull requests to review: Fix #7/ })
 		.getByRole('link')
 		.click();
 	await expect(page.getByRole('navigation', { name: 'Tasks' })).toBeHidden();
 	await expect(page.getByRole('article', { name: /^Task:/ })).toBeVisible();
 	await page.getByRole('link', { name: 'All tasks' }).click();
 	await expect(page.getByRole('navigation', { name: 'Tasks' })).toBeVisible();
+});
+
+const planUrl = (id: string) => `${BASE}?task=${encodeURIComponent(`run:${id}`)}`;
+
+test('a plan awaiting approval is shown rendered and Approve starts the implementation', async ({
+	page
+}) => {
+	await page.setViewportSize({ width: 1280, height: 800 });
+	await installFakeSandbox(page);
+	await page.goto(planUrl(E2E_PLAN_RUN_ID));
+	const plan = page.getByTestId('plan-body');
+	await expect(plan.getByRole('heading', { name: 'Plan' })).toBeVisible();
+	await expect(plan.locator('strong')).toHaveText('regression test');
+	// Sanitised: the script tag from the agent's text is not rendered.
+	await expect(plan.locator('script')).toHaveCount(0);
+	if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/plan.png` });
+	await page.getByRole('button', { name: 'Approve', exact: true }).click();
+	const done = page.getByTestId('task-done');
+	await expect(done).toContainText('Plan approved: implementation started.');
+	await expect(
+		done.getByRole('link', { name: /^implement-labeled-issues #66666666/ })
+	).toBeVisible();
+});
+
+test('Revise sends the text; a run that already moved on says so', async ({ page }) => {
+	await installFakeSandbox(page);
+	await page.goto(planUrl(E2E_PLAN_REVISE_RUN_ID));
+	await page.getByRole('button', { name: 'Revise' }).click();
+	await page.getByLabel('What should change in the plan?').fill('Also cover the Windows path');
+	await page.getByRole('button', { name: 'Send revision' }).click();
+	await expect(page.getByTestId('task-done')).toContainText('Revision sent');
+});
+
+test('the run page shows the same plan controls', async ({ page }) => {
+	await installFakeSandbox(page);
+	await page.goto(`/projects/${E2E_PROJECT}/runs/${E2E_PLAN_REVISE_RUN_ID}`);
+	await expect(page.getByTestId('plan-body')).toContainText('Guard the start-up path');
+	await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeVisible();
+	await page.getByRole('button', { name: 'Approve', exact: true }).click();
+	await expect(page.getByText('Plan approved: implementation started.')).toBeVisible();
+	// The run no longer waits, so the plan is gone.
+	await expect(page.getByTestId('plan-body')).toHaveCount(0);
+});
+
+test('a pull request shows notes, checks and the inline diff; red checks refuse the merge', async ({
+	page
+}) => {
+	await installFakeSandbox(page);
+	await page.goto(`${BASE}?task=${encodeURIComponent('pr:e2e-org/app#51')}`);
+	await expect(page.getByTestId('checks-summary')).toContainText('1 failed (lint)');
+	await page.getByRole('button', { name: 'Approve & merge' }).click();
+	const steps = page.getByRole('list', { name: 'Approve and merge progress' });
+	await expect(steps).toContainText('Checks are failing: lint.');
+	await expect(steps.getByText('Squash and merge')).toBeVisible();
+	// Still open: nothing was merged.
+	await expect(
+		page.getByRole('listitem', { name: /Pull requests to review: Broken change/ })
+	).toBeVisible();
+});
+
+test('Approve & merge approves, merges and the pull request leaves the list', async ({ page }) => {
+	await page.setViewportSize({ width: 1280, height: 800 });
+	await installFakeSandbox(page);
+	await page.goto(`${BASE}?task=${encodeURIComponent('pr:e2e-org/app#50')}`);
+	const notes = page.getByTestId('review-notes');
+	await expect(notes.locator('strong')).toHaveText('Looks good.');
+	await expect(page.getByRole('link', { name: 'review-pull-requests #88888888' })).toBeVisible();
+	await expect(page.getByTestId('checks-summary')).toContainText('2 passed');
+	await expect(page.getByText('src/start.ts')).toBeVisible();
+	await expect(page.locator('.ez-diff__line--add').first()).toContainText('config');
+	await expect(page.locator('.ez-diff__line--del').first()).toContainText('boot(null)');
+	await expect(page.getByText('Too large to show inline').first()).toBeVisible();
+	if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/pr.png` });
+	await page.getByRole('button', { name: 'Approve & merge' }).click();
+	await expect(page.getByTestId('task-done')).toContainText('Approved and merged #50.');
+	await expect(page.getByRole('listitem', { name: /Pull requests to review: Fix #7/ })).toHaveCount(
+		0
+	);
 });
