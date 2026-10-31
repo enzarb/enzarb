@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use enzarb_crds::Project;
@@ -42,8 +42,10 @@ pub trait Link: Send + Sync {
     async fn finished(&self, run_id: &str) -> Result<StepFinished, LinkError>;
     /// `step_stop`.
     fn stop(&self, run_id: &str);
-    /// `step_resume`: continue a step a sandbox restart interrupted.
-    fn resume(&self, run_id: &str);
+    /// When the step last showed progress (a session event not seen before). `None`: unknown.
+    fn last_activity(&self, _run_id: &str) -> Option<Instant> {
+        None
+    }
 }
 
 #[async_trait]
@@ -67,19 +69,60 @@ pub trait ClaudeTokens: Send + Sync {
 pub struct SessionLink {
     session: Session,
     done: Arc<Mutex<HashMap<String, StepFinished>>>,
+    /// Per run: the last `error` frame the sandbox sent for it that no request was waiting for.
+    refused: Arc<Mutex<HashMap<String, String>>>,
+    /// Per run: the highest session event `seq` seen and when it arrived.
+    progress: Arc<Mutex<HashMap<String, (u64, Instant)>>>,
     wake: Arc<Notify>,
 }
 
 impl SessionLink {
+    /// The highest session event `seq` received for `run_id` (0: none yet).
+    fn seen(&self, run_id: &str) -> u64 {
+        self.progress
+            .lock()
+            .unwrap()
+            .get(run_id)
+            .map_or(0, |(seq, _)| *seq)
+    }
+
     pub fn new(session: Session, mut events: Events) -> Self {
         let done: Arc<Mutex<HashMap<String, StepFinished>>> = Arc::default();
+        let refused: Arc<Mutex<HashMap<String, String>>> = Arc::default();
+        let progress: Arc<Mutex<HashMap<String, (u64, Instant)>>> = Arc::default();
         let wake = Arc::new(Notify::new());
-        let (d, w) = (done.clone(), wake.clone());
+        let (d, r, p, w) = (
+            done.clone(),
+            refused.clone(),
+            progress.clone(),
+            wake.clone(),
+        );
         tokio::spawn(async move {
             while let Some(ev) = events.next().await {
-                if let Event::Ctrl(Ctrl::StepFinished(f)) = ev {
-                    d.lock().unwrap().insert(f.run_id.clone(), f);
-                    w.notify_waiters();
+                let Event::Ctrl(c) = ev else { continue };
+                match c {
+                    Ctrl::StepFinished(f) => {
+                        d.lock().unwrap().insert(f.run_id.clone(), f);
+                        w.notify_waiters();
+                    }
+                    // A status poll replays old events: only a higher `seq` is progress.
+                    Ctrl::SessionEvent(e) => {
+                        let mut p = p.lock().unwrap();
+                        let seen = p.get(&e.run_id).map_or(0, |(s, _)| *s);
+                        if e.seq > seen {
+                            p.insert(e.run_id, (e.seq, Instant::now()));
+                        }
+                    }
+                    Ctrl::Error {
+                        code,
+                        message,
+                        run_id: Some(id),
+                        ..
+                    } => {
+                        r.lock().unwrap().insert(id, format!("{code}: {message}"));
+                        w.notify_waiters();
+                    }
+                    _ => {}
                 }
             }
             w.notify_waiters();
@@ -87,6 +130,8 @@ impl SessionLink {
         Self {
             session,
             done,
+            refused,
+            progress,
             wake,
         }
     }
@@ -113,7 +158,9 @@ impl Link for SessionLink {
     async fn status(&self, run_id: &str) -> Result<(StepPhase, Option<StepFinished>), LinkError> {
         let i: StepInfo = self
             .session
-            .step_status(run_id, 0)
+            // Only events after the highest `seq` already seen: a poll that started at 0 would
+            // replay the whole session every time it is called (the liveness check polls).
+            .step_status(run_id, self.seen(run_id))
             .await
             .map_err(transient)?;
         Ok((i.state, i.result))
@@ -123,6 +170,9 @@ impl Link for SessionLink {
         loop {
             if let Some(f) = self.done.lock().unwrap().get(run_id) {
                 return Ok(f.clone());
+            }
+            if let Some(why) = self.refused.lock().unwrap().get(run_id) {
+                return Err(LinkError::Transient(format!("sandbox refused: {why}")));
             }
             if self.session.is_closed() {
                 return Err(LinkError::Transient("the sandbox connection closed".into()));
@@ -148,8 +198,8 @@ impl Link for SessionLink {
         let _ = self.session.step_stop(run_id);
     }
 
-    fn resume(&self, run_id: &str) {
-        let _ = self.session.step_resume(run_id);
+    fn last_activity(&self, run_id: &str) -> Option<Instant> {
+        self.progress.lock().unwrap().get(run_id).map(|(_, at)| *at)
     }
 }
 

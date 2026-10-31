@@ -6,6 +6,7 @@
 //! simulated crash, test runs) and `wait` nodes resumed or not by routed events, or timed out.
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -393,6 +394,12 @@ struct Fake {
     servers: Mutex<Vec<Session>>,
     stops: Mutex<Vec<String>>,
     connects: Mutex<usize>,
+    /// Steps the sandbox lost the secrets of (a restart): `step_status` answers `interrupted`.
+    interrupted: Mutex<std::collections::HashSet<String>>,
+    /// A `step_start` on an interrupted step is accepted but the step never leaves `interrupted`.
+    stuck: std::sync::atomic::AtomicBool,
+    /// A `step_start` on an interrupted step is answered with an `error` frame.
+    refuse: std::sync::atomic::AtomicBool,
 }
 
 impl Fake {
@@ -404,6 +411,9 @@ impl Fake {
             servers: Mutex::default(),
             stops: Mutex::default(),
             connects: Mutex::new(0),
+            interrupted: Mutex::default(),
+            stuck: Default::default(),
+            refuse: Default::default(),
         })
     }
 
@@ -462,6 +472,19 @@ impl Sandboxes for Dial {
                 let Event::Ctrl(c) = ev else { continue };
                 match c {
                     Ctrl::StepStart(s) => {
+                        let was_interrupted = fake.interrupted.lock().unwrap().contains(&s.run_id);
+                        if was_interrupted {
+                            if fake.refuse.load(Ordering::SeqCst) {
+                                let _ = server.send_run_error(&s.run_id, "boom", "refused");
+                                continue;
+                            }
+                            let _ = server.accept_step(&s.run_id, StepPhase::Running, true);
+                            fake.starts.lock().unwrap().push((*s).clone());
+                            if !fake.stuck.load(Ordering::SeqCst) {
+                                fake.interrupted.lock().unwrap().remove(&s.run_id);
+                            }
+                            continue;
+                        }
                         let existing = fake.steps.lock().unwrap().contains_key(&s.run_id);
                         let _ = server.accept_step(&s.run_id, StepPhase::Running, existing);
                         if existing {
@@ -476,7 +499,9 @@ impl Sandboxes for Dial {
                     }
                     Ctrl::StepStatus { run_id, .. } => {
                         let known = fake.steps.lock().unwrap().get(&run_id).cloned();
+                        let lost = fake.interrupted.lock().unwrap().contains(&run_id);
                         let (state, result) = match known {
+                            Some(None) if lost => (StepPhase::Interrupted, None),
                             None => (StepPhase::Unknown, None),
                             Some(None) => (StepPhase::Running, None),
                             Some(Some(f)) => (StepPhase::Finished, Some(f)),
@@ -551,6 +576,17 @@ fn executor_with(
     token: Option<&'static str>,
     actions: Arc<dyn Actions>,
 ) -> Arc<Executor> {
+    executor_cfg(env, wf, fake, token, actions, ExecConfig::default())
+}
+
+fn executor_cfg(
+    env: &Env,
+    wf: &'static str,
+    fake: &Arc<Fake>,
+    token: Option<&'static str>,
+    actions: Arc<dyn Actions>,
+    base: ExecConfig,
+) -> Arc<Executor> {
     Arc::new(
         Executor::new(
             env.pool.clone(),
@@ -563,6 +599,7 @@ fn executor_with(
                 poll: Duration::from_millis(100),
                 lease: Duration::from_secs(1),
                 retry_backoff: Duration::from_millis(200),
+                ..base
             },
         )
         .with_actions(actions),
@@ -1837,4 +1874,109 @@ async fn an_unapproved_plan_times_out() {
     assert_eq!(agent_prompts(&p.fake).len(), 1);
     let out = node_outputs(&p.env.pool, &p.id, "approve_plan").await;
     assert_eq!(out["timed_out"], true);
+}
+
+/// A run whose agent step is running, then "crashes" tracks and has the sandbox lose the step's
+/// secrets (a pod roll): the step is `interrupted` and the lease is free. Returns the run id and
+/// the agent step's id.
+async fn run_with_interrupted_step(env: &Env, fake: &Arc<Fake>) -> (String, String) {
+    let first = executor(env, WORKFLOWS, fake, Some("t"));
+    let id = pending_run(&env.pool, "wf", 1).await;
+    let stop = start_loop(&first);
+    for _ in 0..100 {
+        if fake.started().len() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(fake.started().len(), 1);
+    let _ = stop.send(true);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let step = fake.started()[0].run_id.clone();
+    fake.interrupted.lock().unwrap().insert(step.clone());
+    sqlx::query("UPDATE tracks.runs SET lease_until = now() - interval '1 second', lease_owner = 'dead' WHERE id = $1::uuid")
+        .bind(&id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    (id, step)
+}
+
+fn agent_only_fake() -> Arc<Fake> {
+    Fake::new(Box::new(|s| match &s.exec {
+        StepExec::Agent { .. } => None,
+        StepExec::Command { .. } => Some(ok("")),
+    }))
+}
+
+#[tokio::test]
+async fn interrupted_step_is_resumed_with_step_start() {
+    let env = db_setup().await;
+    let fake = agent_only_fake();
+    let (id, step) = run_with_interrupted_step(&env, &fake).await;
+    let second = executor(&env, WORKFLOWS, &fake, Some("t"));
+    let _stop = start_loop(&second);
+    for _ in 0..100 {
+        if fake.started().len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let started = fake.started();
+    assert_eq!(started.len(), 2, "step_start was sent again");
+    assert_eq!(started[1].run_id, step);
+    let mut done = agent_ok(true);
+    done.run_id = step;
+    fake.finish(done);
+    wait_for(&env.pool, &id, "done").await;
+}
+
+#[tokio::test]
+async fn silent_interrupted_step_fails_the_run() {
+    let env = db_setup().await;
+    let fake = agent_only_fake();
+    let (id, step) = run_with_interrupted_step(&env, &fake).await;
+    fake.stuck.store(true, Ordering::SeqCst);
+    let second = executor_cfg(
+        &env,
+        WORKFLOWS,
+        &fake,
+        Some("t"),
+        Arc::new(enzarb_tracks::actions::NoActions),
+        ExecConfig {
+            step_stall: Duration::from_millis(300),
+            ..ExecConfig::default()
+        },
+    );
+    let _stop = start_loop(&second);
+    let (_, reason) = wait_for(&env.pool, &id, "failed").await;
+    assert!(
+        reason.as_deref().unwrap_or("").contains("made no progress"),
+        "{reason:?}"
+    );
+    assert!(
+        fake.stops.lock().unwrap().contains(&step),
+        "the step was stopped"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_step_start_retries_and_never_hangs() {
+    let env = db_setup().await;
+    let fake = agent_only_fake();
+    let (id, _) = run_with_interrupted_step(&env, &fake).await;
+    fake.refuse.store(true, Ordering::SeqCst);
+    let second = executor(&env, WORKFLOWS, &fake, Some("t"));
+    let _stop = start_loop(&second);
+    for _ in 0..100 {
+        if *fake.connects.lock().unwrap() >= 4 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        *fake.connects.lock().unwrap() >= 4,
+        "the run keeps being retried"
+    );
+    assert_eq!(status(&env.pool, &id).await.0, "running");
 }
