@@ -2961,6 +2961,155 @@ textarea.ez-control {
 	}
 }
 
+.ez-runs__link {
+	display: inline-flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-2, 0.5rem);
+	color: inherit;
+	text-decoration: none;
+}
+
+// Tasks: list on the left, the selected task on the right; stacked on a phone.
+.ez-tasks {
+	display: grid;
+	grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
+	gap: var(--space-4, 1rem);
+	align-items: start;
+
+	&__sidebar {
+		overflow-y: auto;
+		max-height: calc(100dvh - 10rem);
+	}
+
+	&__group {
+		margin: var(--space-3, 0.75rem) 0 var(--space-1, 0.25rem);
+		font-size: 0.8rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	&__entries {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+
+	&__entry {
+		display: flex;
+		flex-direction: column;
+		gap: 0.125rem;
+		padding: var(--space-2, 0.5rem);
+		border-left: 3px solid transparent;
+		color: inherit;
+		text-decoration: none;
+		overflow-wrap: anywhere;
+		font-size: 0.9rem;
+
+		&[aria-current='true'] {
+			border-left-color: var(--accent, currentColor);
+			background: var(--surface-2, rgb(128 128 128 / 0.12));
+		}
+	}
+
+	&__pane {
+		min-width: 0;
+	}
+
+	&__back {
+		display: none;
+	}
+
+	&__none {
+		padding: var(--space-4, 1rem);
+	}
+
+	// The detail scrolls above a fixed-height chat bar.
+	&__detail {
+		display: flex;
+		flex-direction: column;
+		height: calc(100dvh - 10rem);
+		min-height: 24rem;
+	}
+
+	&__scroll {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		padding-right: var(--space-2, 0.5rem);
+	}
+
+	&__head h2 {
+		margin: 0 0 var(--space-1, 0.25rem);
+		overflow-wrap: anywhere;
+	}
+
+	&__links,
+	&__actions {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-2, 0.5rem);
+		margin: var(--space-1, 0.25rem) 0;
+	}
+
+	&__body {
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+		margin: 0;
+	}
+
+	&__chat {
+		flex: none;
+		height: 6.5rem;
+		border-top: 1px solid var(--border, currentColor);
+		padding-top: var(--space-2, 0.5rem);
+	}
+
+	&__chatbar {
+		display: flex;
+		gap: var(--space-2, 0.5rem);
+		height: 100%;
+	}
+
+	&__chatinput {
+		flex: 1;
+		min-width: 0;
+		resize: none;
+		font: inherit;
+	}
+
+	&__chatactions {
+		display: flex;
+		align-items: flex-end;
+	}
+
+	@media (max-width: 48rem) {
+		grid-template-columns: minmax(0, 1fr);
+
+		&__sidebar {
+			max-height: none;
+		}
+
+		&[data-selected='true'] &__sidebar {
+			display: none;
+		}
+
+		&[data-selected='false'] &__pane {
+			display: none;
+		}
+
+		&__back {
+			display: inline-block;
+			margin-bottom: var(--space-2, 0.5rem);
+		}
+
+		&__detail {
+			height: calc(100dvh - 8rem);
+		}
+	}
+}
+
 // ez's AskUserQuestion in the chat transcript.
 .ez-chat-question {
 	&__group {

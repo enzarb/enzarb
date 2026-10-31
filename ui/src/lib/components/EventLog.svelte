@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { type EventDecision as Decision, type EventRow, isActive } from '#lib/events.ts';
+	import RunLink from './RunLink.svelte';
 	import EventDecision from './EventDecision.svelte';
 	import Button from './form/Button.svelte';
 	import Checkbox from './form/Checkbox.svelte';
@@ -97,7 +98,9 @@
 						<EventDecision decision={decisions[r.id]!} />
 					{/if}
 					{#each runLinks[r.id] ?? [] as run (run.id)}
-						<a class="ez-event-log__run" href={run.href}>View run of {run.workflow}</a>
+						<span class="ez-event-log__run"
+							><RunLink workflow={run.workflow} id={run.id} href={run.href} /></span
+						>
 					{/each}
 				</li>
 			{/each}

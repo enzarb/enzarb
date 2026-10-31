@@ -85,7 +85,7 @@ describe('projectTasks', () => {
 					updatedAt: '2026-10-30T13:00:00.000Z'
 				}
 			],
-			[{ number: 5, title: 'Bug', url: 'u', updatedAt: '2026-10-30T14:00:00.000Z' }]
+			[{ number: 5, title: 'Bug', body: '', url: 'u', updatedAt: '2026-10-30T14:00:00.000Z' }]
 		);
 		const { tasks, notes } = await projectTasks({ tracks, github: gh }, project);
 		expect(notes).toEqual([]);
@@ -121,7 +121,7 @@ describe('projectTasks', () => {
 		]);
 		const gh = github(
 			[],
-			[{ number: 5, title: 'Bug', url: 'u', updatedAt: '2026-10-30T14:00:00.000Z' }]
+			[{ number: 5, title: 'Bug', body: '', url: 'u', updatedAt: '2026-10-30T14:00:00.000Z' }]
 		);
 		const { tasks } = await projectTasks({ tracks, github: gh }, project);
 		expect(tasks).toEqual([]);

@@ -1,15 +1,24 @@
 <script lang="ts">
-	import { groupTasks, type Task, type TaskList } from '#lib/tasks.ts';
+	import { repoContext } from '#lib/github-links.ts';
+	import type { RunDetail } from '#lib/runs.ts';
+	import { groupTasks, type DefaultActionId, type Task, type TaskList } from '#lib/tasks.ts';
 	import Button from './form/Button.svelte';
-	import Badge from './ui/Badge.svelte';
+	import TaskDetail from './tasks/TaskDetail.svelte';
+	import TaskSidebar from './tasks/TaskSidebar.svelte';
 	import EmptyState from './ui/EmptyState.svelte';
 	import Notice from './ui/Notice.svelte';
-	import Section from './ui/Section.svelte';
 	import Skeleton from './ui/Skeleton.svelte';
 
-	/** Everything that waits on a human, grouped by kind; each task links to GitHub and its run. */
+	/**
+	 * Everything that waits on a human: the list on the left, the selected task on the right
+	 * (`?task=<key>`, set by the page). On a phone the two stack, list first.
+	 */
 	let {
 		list,
+		selected = null,
+		href,
+		backHref,
+		run,
 		showProject = false,
 		failed = false,
 		retry,
@@ -19,6 +28,14 @@
 	}: {
 		/** `undefined` while the first load is in flight. */
 		list: TaskList | undefined;
+		/** The `?task=` key from the URL. */
+		selected?: string | null;
+		/** The URL that selects a task key. */
+		href: (key: string) => string;
+		/** The URL with no task selected (the back control on a phone). */
+		backHref: string;
+		/** The selected run task's run; see TaskDetail. */
+		run?: RunDetail | null;
 		/** The top-level page spans Projects: show which one a task belongs to. */
 		showProject?: boolean;
 		failed?: boolean;
@@ -31,7 +48,10 @@
 	let busy = $state<string | null>(null);
 	let message = $state('');
 
-	async function act(t: Task, run: (t: Task) => Promise<string>) {
+	async function act(t: Task, id: DefaultActionId) {
+		const run =
+			id === 'implement' ? implement : id === 'retry' ? retryRun : id === 'stop' ? stop : null;
+		if (!run) return;
 		busy = t.key;
 		message = '';
 		try {
@@ -44,9 +64,8 @@
 	}
 
 	const groups = $derived(list ? groupTasks(list.tasks) : []);
-	const where = (t: Task) =>
-		`${showProject ? `${t.project} · ` : ''}${t.repo}${t.number ? `#${t.number}` : ''}`;
-	const when = (iso: string) => new Date(iso).toLocaleString();
+	const current = $derived(list?.tasks.find((t) => t.key === selected) ?? null);
+	const context = $derived(repoContext((list?.tasks ?? []).map((t) => t.repo)));
 </script>
 
 {#if failed}
@@ -66,48 +85,23 @@
 			title="Nothing is waiting for you"
 			description="Runs parked at a wait, failed runs, pull requests from ez branches and triaged issues show up here."
 		/>
+	{:else}
+		<div class="ez-tasks" data-selected={current ? 'true' : 'false'}>
+			<TaskSidebar {groups} selected={current?.key ?? null} {href} {showProject} {context} />
+			<div class="ez-tasks__pane">
+				{#if current}
+					<a class="ez-tasks__back" href={backHref}>All tasks</a>
+					<TaskDetail
+						task={current}
+						{run}
+						{context}
+						busy={busy === current.key}
+						act={(id) => act(current, id)}
+					/>
+				{:else}
+					<p class="ez-muted ez-tasks__none">Select a task to see it here.</p>
+				{/if}
+			</div>
+		</div>
 	{/if}
-	{#each groups as g (g.kind)}
-		<Section title={g.label} description="{g.tasks.length} open">
-			<ul class="ez-runs" data-testid="tasks-{g.kind}">
-				{#each g.tasks as t (t.key)}
-					<li class="ez-runs__row" aria-label="{g.label}: {t.title}">
-						<strong>{t.title}</strong>
-						<span class="ez-muted">{where(t)}</span>
-						{#if t.kind === 'wait'}
-							<Badge tone="neutral" hollow>waiting</Badge>
-							{#if t.waitingFor}<span class="ez-muted">for {t.waitingFor}</span>{/if}
-							{#if t.until}<span class="ez-muted">until {when(t.until)}</span>{/if}
-						{:else if t.kind === 'failed'}
-							<Badge tone="danger">failed</Badge>
-							{#if t.reason}<span class="ez-muted">{t.reason}</span>{/if}
-						{:else if t.kind === 'review'}
-							<Badge tone="info">{t.draft ? 'draft' : 'open'}</Badge>
-							<code>{t.branch}</code>
-						{:else}
-							<Badge tone="accent" plain>triaged</Badge>
-						{/if}
-						{#if t.githubUrl}
-							<a href={t.githubUrl} target="_blank" rel="noopener noreferrer">GitHub</a>
-						{/if}
-						{#if t.runUrl}<a href={t.runUrl}>Run</a>{/if}
-						{#if t.kind === 'wait'}
-							<Button size="sm" loading={busy === t.key} onclick={() => act(t, stop)}>Stop</Button>
-						{:else if t.kind === 'failed'}
-							<Button size="sm" loading={busy === t.key} onclick={() => act(t, retryRun)}
-								>Retry</Button
-							>
-						{:else if t.kind === 'triaged'}
-							<Button
-								size="sm"
-								variant="primary"
-								loading={busy === t.key}
-								onclick={() => act(t, implement)}>Implement</Button
-							>
-						{/if}
-					</li>
-				{/each}
-			</ul>
-		</Section>
-	{/each}
 {/if}

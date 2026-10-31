@@ -75,7 +75,7 @@ export async function projectTasks(
 			.find((n) => n.status === 'waiting' && (n.wait || n.rendered?.type === 'wait'));
 		tasks.push({
 			kind: 'wait',
-			key: `wait:${r.id}`,
+			key: `run:${r.id}`,
 			project: project.name,
 			repo: r.repo,
 			number: r.subject?.number ?? null,
@@ -102,7 +102,7 @@ export async function projectTasks(
 		if (r.status !== 'failed' || isClosed(r)) continue;
 		tasks.push({
 			kind: 'failed',
-			key: `failed:${r.id}`,
+			key: `run:${r.id}`,
 			project: project.name,
 			repo: r.repo,
 			number: r.subject?.number ?? null,
@@ -133,7 +133,7 @@ export async function projectTasks(
 			if (!p.branch.startsWith(RUN_BRANCH_PREFIX)) continue;
 			tasks.push({
 				kind: 'review',
-				key: `review:${repo}#${p.number}`,
+				key: `pr:${repo}#${p.number}`,
 				project: project.name,
 				repo,
 				number: p.number,
@@ -150,11 +150,12 @@ export async function projectTasks(
 			if (started.has(keyOf(repo, i.number))) continue;
 			tasks.push({
 				kind: 'triaged',
-				key: `triaged:${repo}#${i.number}`,
+				key: `issue:${repo}#${i.number}`,
 				project: project.name,
 				repo,
 				number: i.number,
 				title: i.title,
+				body: i.body,
 				githubUrl: i.url,
 				runUrl: null,
 				at: i.updatedAt
