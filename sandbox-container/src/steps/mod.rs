@@ -50,7 +50,7 @@ use crate::config::Config;
 use crate::docker_prune::ActivityGate;
 use crate::exec::{self, CmdSpec, Ctl, LineSink};
 use crate::reaper::{ExitStatus, Reaper};
-use crate::repos::{RepoLocks, repo_dir_name, target_dir_env};
+use crate::repos::{RepoLocks, repo_dir_name, shared_target_dir, target_dir_env};
 
 /// Largest serialized payload of one session event; bigger ones keep head and tail.
 pub const MAX_EVENT_PAYLOAD: usize = 1024 * 1024;
@@ -668,6 +668,31 @@ impl StepManager {
         f(&busy)
     }
 
+    /// Runs `f` with the shared build dirs (see [`shared_target_dir`]) of the repos of running
+    /// steps while no step can start or end.
+    pub fn with_busy_repos<R>(
+        &self,
+        workspace: &Path,
+        f: impl FnOnce(&std::collections::HashSet<PathBuf>) -> R,
+    ) -> R {
+        let runs = self.inner.runs.lock().unwrap();
+        let mut busy = std::collections::HashSet::new();
+        for r in runs.values() {
+            let g = r.inner.lock().unwrap();
+            if g.phase != StepPhase::Running {
+                continue;
+            }
+            if let Some(s) = g.start.as_deref().or(g.stored.as_ref()) {
+                busy.extend(
+                    s.workspaces
+                        .iter()
+                        .filter_map(|w| shared_target_dir(workspace, &w.repo)),
+                );
+            }
+        }
+        f(&busy)
+    }
+
     /// Runs `f` with the task ids whose checkouts must stay while no step can start or end:
     /// any run of the task is running, or may be continued (interrupted, or finished by an
     /// environment failure, see [`resumable`]). Only tasks whose runs all finished for good
@@ -697,6 +722,15 @@ impl StepManager {
             .prune
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// [`Self::prune_lock`] unless a pass is running.
+    pub fn try_prune_lock(&self) -> Option<std::sync::MutexGuard<'_, ()>> {
+        match self.inner.prune.try_lock() {
+            Ok(g) => Some(g),
+            Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
     }
 
     /// CTRL `step_resume`.
@@ -979,11 +1013,19 @@ impl Inner {
             let min = prune.min_free_percent;
             let ws2 = ws.clone();
             let _ = tokio::task::spawn_blocking(move || {
-                crate::workspace_prune::prune_once(&ws2, &steps, min)
+                // A pass already running makes this one redundant; never wait behind it.
+                crate::workspace_prune::prune_if_idle(&ws2, &steps, min)
             })
             .await;
         }
-        environment::workspace_full(&ws)
+        self.workspace_full()
+    }
+
+    fn workspace_full(&self) -> Option<String> {
+        match self.cfg.workspace_full_probe {
+            Some(probe) => probe(&self.cfg.workspace),
+            None => environment::workspace_full(&self.cfg.workspace),
+        }
     }
 
     fn memory_events(&self) -> PathBuf {
@@ -1468,10 +1510,7 @@ impl Inner {
             ev.text.push_str(e);
         }
         ev.oom_after = environment::oom_kill_count(&self.memory_events());
-        ev.workspace_full = ev
-            .workspace_full
-            .take()
-            .or_else(|| environment::workspace_full(&self.cfg.workspace));
+        ev.workspace_full = ev.workspace_full.take().or_else(|| self.workspace_full());
         environment::classify(&ev)
     }
 

@@ -9,7 +9,11 @@
 //! 1. cache directories (those holding a valid `CACHEDIR.TAG`, <https://bford.info/cachedir/>;
 //!    Cargo writes one in `target/`) of tasks with no running step, least recently used first;
 //! 2. whole `tasks/<id>/` checkouts of tasks that ended (no running or resumable run), oldest
-//!    first, unless they hold commits that are on no remote;
+//!    first, unless they might hold the only copy of any work: a commit on no remote (any ref,
+//!    including a detached HEAD, a stash or a tag), uncommitted or untracked files, a rebase,
+//!    merge or cherry-pick in progress, files outside any repository, a repository too deep to
+//!    inspect, a `repos/*` link into the checkout, or anything that cannot be checked
+//!    (when in doubt, the checkout stays);
 //! 3. the sccache directory, oldest files first;
 //! 4. the per-repo shared Cargo target dirs (`<ws>/.cache/target/<owner>/<repo>`), unless a
 //!    build holds the Cargo lock.
@@ -106,7 +110,8 @@ impl WorkspacePruner {
                 let min = self.cfg.min_free_percent;
                 let stop2 = stop.clone();
                 let _ = tokio::task::spawn_blocking(move || {
-                    prune_once_until(&ws, &steps, min, &|| stop2.is_cancelled())
+                    let _pass = steps.prune_lock();
+                    prune_locked(&ws, &steps, min, &|| stop2.is_cancelled())
                 })
                 .await;
                 tokio::select! {
@@ -125,6 +130,9 @@ pub trait Registry {
     /// Calls `f` with the tasks whose checkout must stay (running or resumable), while no step
     /// can start or end.
     fn with_protected_tasks(&self, f: &mut dyn FnMut(&HashSet<String>));
+    /// Calls `f` with the shared target dirs of the repos of running steps, while no step can
+    /// start or end.
+    fn with_busy_repos(&self, workspace: &Path, f: &mut dyn FnMut(&HashSet<PathBuf>));
 }
 
 impl Registry for StepManager {
@@ -135,32 +143,43 @@ impl Registry for StepManager {
     fn with_protected_tasks(&self, f: &mut dyn FnMut(&HashSet<String>)) {
         StepManager::with_protected_tasks(self, |s| f(s))
     }
+
+    fn with_busy_repos(&self, workspace: &Path, f: &mut dyn FnMut(&HashSet<PathBuf>)) {
+        StepManager::with_busy_repos(self, workspace, |s| f(s))
+    }
 }
 
 /// One pass: returns the number of entries removed (cache directories, checkouts, sccache
 /// files, shared target directories).
 pub fn prune_once(workspace: &Path, steps: &StepManager, min_free_percent: u8) -> usize {
-    prune_once_until(workspace, steps, min_free_percent, &|| false)
+    let _pass = steps.prune_lock();
+    prune_locked(workspace, steps, min_free_percent, &|| false)
+}
+
+/// Like [`prune_once`], but `None` (nothing done) while another pass is running, so a step that
+/// is starting never waits behind a long periodic pass.
+pub fn prune_if_idle(workspace: &Path, steps: &StepManager, min_free_percent: u8) -> Option<usize> {
+    let _pass = steps.try_prune_lock()?;
+    Some(prune_locked(workspace, steps, min_free_percent, &|| false))
 }
 
 /// Unique names for renamed-aside caches.
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
-fn prune_once_until(
+/// The caller holds the pass lock (one pass at a time: the periodic one and the one before a
+/// step starts).
+fn prune_locked(
     workspace: &Path,
     steps: &StepManager,
     min_free_percent: u8,
     stopped: &dyn Fn() -> bool,
 ) -> usize {
-    // One pass at a time: the periodic one and the one before a step starts.
-    let _pass = steps.prune_lock();
     let low = || disk_usage(workspace).is_some_and(|d| d.is_low(min_free_percent));
     prune_pass(workspace, steps, &low, stopped, min_free_percent)
 }
 
-/// A checkout kept because its commits may exist nowhere else: the repository and how many
-/// commits are on no remote (`None`: could not be determined).
-type Skipped = (PathBuf, Option<u64>);
+/// Something kept because it may hold work that exists nowhere else: the path and why.
+type Skipped = (PathBuf, String);
 
 /// The phases, cheapest loss first; each one runs only while `low()` holds.
 fn prune_pass(
@@ -173,7 +192,7 @@ fn prune_pass(
     if !low() {
         return 0;
     }
-    let mut removed = sweep_leftovers(workspace);
+    let mut removed = sweep_leftovers(workspace, steps);
     let mut skipped: Vec<Skipped> = Vec::new();
     if low() && !stopped() {
         removed += prune_task_caches(workspace, steps, low, stopped);
@@ -185,7 +204,7 @@ fn prune_pass(
         removed += prune_sccache(workspace, low, stopped);
     }
     if low() && !stopped() {
-        removed += prune_shared_targets(workspace, low, stopped);
+        removed += prune_shared_targets(workspace, steps, low, stopped);
     }
     if low() && !stopped() {
         let top = breakdown(workspace, BREAKDOWN_TOP);
@@ -197,10 +216,7 @@ fn prune_pass(
         };
         let kept = skipped
             .iter()
-            .map(|(p, n)| match n {
-                Some(n) => format!("{} ({n} unpushed commits)", p.display()),
-                None => format!("{} (unpushed commits unknown)", p.display()),
-            })
+            .map(|(p, why)| format!("{} ({why})", p.display()))
             .collect::<Vec<_>>()
             .join(", ");
         tracing::warn!(
@@ -215,12 +231,28 @@ fn prune_pass(
 }
 
 /// Removes what an earlier pass renamed aside and did not finish deleting (a crash
-/// mid-delete), also when its tag is already gone.
-fn sweep_leftovers(workspace: &Path) -> usize {
+/// mid-delete), also when its tag is already gone. Leftovers inside the checkout of a running
+/// or resumable task are left alone; the listing is made while the step registry is locked.
+fn sweep_leftovers(workspace: &Path, steps: &dyn Registry) -> usize {
+    let mut found: Vec<PathBuf> = Vec::new();
+    steps.with_protected_tasks(&mut |keep| {
+        for e in std::fs::read_dir(workspace.join("tasks"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            if !e.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            if is_aside(&e.path()) {
+                found.push(e.path());
+            } else if !keep.contains(&e.file_name().to_string_lossy().into_owned()) {
+                found.extend(leftovers(&e.path(), MAX_DEPTH));
+            }
+        }
+    });
+    found.extend(leftovers(&workspace.join(".cache/target"), 3));
     let mut n = 0;
-    let found = leftovers(&workspace.join("tasks"), MAX_DEPTH + 1)
-        .into_iter()
-        .chain(leftovers(&workspace.join(".cache/target"), 3));
     for p in found {
         match std::fs::remove_dir_all(&p) {
             Ok(()) => n += 1,
@@ -249,9 +281,31 @@ fn leftovers(root: &Path, depth: usize) -> Vec<PathBuf> {
     out
 }
 
+/// Exactly what [`move_aside`] produces: `.<name>` + [`ASIDE`] + `<pid>-<seq>`.
 fn is_aside(p: &Path) -> bool {
-    p.file_name()
-        .is_some_and(|f| f.to_string_lossy().contains(ASIDE))
+    let Some(name) = p.file_name().map(|f| f.to_string_lossy()) else {
+        return false;
+    };
+    let Some((base, tail)) = name
+        .strip_prefix('.')
+        .and_then(|rest| rest.rsplit_once(ASIDE))
+    else {
+        return false;
+    };
+    let digits =
+        |s: Option<&str>| s.is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()));
+    let mut parts = tail.split('-');
+    !base.is_empty() && digits(parts.next()) && digits(parts.next()) && parts.next().is_none()
+}
+
+/// Whether `p` is on the same filesystem as the workspace (never prune across a mount point).
+/// Anything that cannot be determined counts as a different one.
+fn same_dev(p: &Path, workspace: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::symlink_metadata(p), std::fs::metadata(workspace)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev(),
+        _ => false,
+    }
 }
 
 /// Phase 1: tagged caches inside the task workspaces of idle tasks, least recently used first.
@@ -268,7 +322,7 @@ fn prune_task_caches(
         }
         let caches: Vec<PathBuf> = cache_dirs(&task, MAX_DEPTH)
             .into_iter()
-            .filter(|c| !tag_is_tracked(c))
+            .filter(|c| same_dev(c, workspace) && !tag_is_tracked(c))
             .collect();
         if caches.is_empty() {
             continue;
@@ -281,14 +335,18 @@ fn prune_task_caches(
                 moved = caches.iter().filter_map(|c| move_aside(c)).collect();
             }
         });
+        let mut gone = 0;
         for m in &moved {
-            if let Err(e) = std::fs::remove_dir_all(m) {
-                tracing::warn!(path = %m.display(), error = %e, "could not remove a pruned cache");
+            match std::fs::remove_dir_all(m) {
+                Ok(()) => gone += 1,
+                Err(e) => {
+                    tracing::warn!(path = %m.display(), error = %e, "could not remove a pruned cache")
+                }
             }
         }
-        if !moved.is_empty() {
-            removed += moved.len();
-            tracing::info!(task = %name, caches = moved.len(), "pruned task workspace caches");
+        if gone > 0 {
+            removed += gone;
+            tracing::info!(task = %name, caches = gone, "pruned task workspace caches");
         }
     }
     removed
@@ -301,9 +359,9 @@ fn task_name(task: &Path) -> String {
 }
 
 /// Phase 2: whole `tasks/<id>/` checkouts of tasks that ended, oldest first. A task stays if
-/// any of its runs is running or can be resumed, and so does a checkout holding commits that
-/// are on no remote (a chat can read an unpushed run branch from it, and can't push, so it may
-/// be the only copy). The next step of the task clones again.
+/// any of its runs is running or can be resumed, and so does a checkout that might hold the
+/// only copy of some work (see [`checkout_blockers`]): chat can read an unpushed run branch
+/// from it, and can't push. The next step of the task clones again.
 fn prune_task_checkouts(
     workspace: &Path,
     steps: &dyn Registry,
@@ -322,81 +380,215 @@ fn prune_task_checkouts(
         if protected {
             continue;
         }
-        let mut unsafe_to_delete = false;
-        for repo in git_repos(&task, 3) {
-            match unpushed_commits(&repo) {
-                Ok(0) => {}
-                Ok(n) => {
-                    skipped.push((repo, Some(n)));
-                    unsafe_to_delete = true;
-                }
-                Err(e) => {
-                    tracing::warn!(repo = %repo.display(), error = %e, "cannot count unpushed commits; keeping the checkout");
-                    skipped.push((repo, None));
-                    unsafe_to_delete = true;
-                }
-            }
-        }
-        if unsafe_to_delete {
+        if !same_dev(&task, workspace) {
+            skipped.push((task, "on another filesystem".into()));
             continue;
         }
-        // Renamed aside while no step can start; a step that registered meanwhile wins.
+        let blockers = checkout_blockers(&task, workspace);
+        if !blockers.is_empty() {
+            for (p, why) in &blockers {
+                tracing::warn!(path = %p.display(), why = %why, "keeping the checkout of an ended task");
+            }
+            skipped.extend(blockers);
+            continue;
+        }
+        // Renamed aside while no step can start; a step that registered meanwhile wins, and
+        // so does a `repos/*` link made meanwhile.
         let mut moved = None;
         steps.with_protected_tasks(&mut |keep| {
+            if !keep.contains(&name) && !matches!(linked_from_repos(workspace, &task), Ok(None)) {
+                return;
+            }
             if !keep.contains(&name) {
                 moved = move_aside(&task);
             }
         });
         let Some(m) = moved else { continue };
-        if let Err(e) = std::fs::remove_dir_all(&m) {
-            tracing::warn!(path = %m.display(), error = %e, "could not remove a pruned task checkout");
+        match std::fs::remove_dir_all(&m) {
+            Ok(()) => {
+                removed += 1;
+                tracing::info!(task = %name, "pruned the checkout of an ended task");
+            }
+            Err(e) => {
+                tracing::warn!(path = %m.display(), error = %e, "could not remove a pruned task checkout")
+            }
         }
-        removed += 1;
-        tracing::info!(task = %name, "pruned the checkout of an ended task");
     }
     removed
 }
 
-/// Repositories (directories with a `.git`) at most `depth` levels under `dir`, `dir`
-/// included; never into a repository or through a symlink.
-fn git_repos(dir: &Path, depth: usize) -> Vec<PathBuf> {
-    if std::fs::symlink_metadata(dir.join(".git")).is_ok() {
-        return vec![dir.to_path_buf()];
+/// How deep under a task directory repositories are searched for. A directory still unexplored
+/// at that depth keeps the checkout.
+const REPO_SEARCH_DEPTH: usize = 8;
+
+/// Why the checkout `task` must not be deleted (empty: it may go). Fails closed: whatever
+/// cannot be inspected is a reason to keep.
+fn checkout_blockers(task: &Path, workspace: &Path) -> Vec<Skipped> {
+    let mut out = Vec::new();
+    match linked_from_repos(workspace, task) {
+        Ok(None) => {}
+        Ok(Some(link)) => out.push((
+            task.to_path_buf(),
+            format!("repos/{link} points into it, chat opens it from there"),
+        )),
+        Err(e) => out.push((
+            task.to_path_buf(),
+            format!("cannot check repos/ links: {e}"),
+        )),
     }
-    if depth == 0 {
-        return Vec::new();
+    let mut repos = Vec::new();
+    scan(task, REPO_SEARCH_DEPTH, &mut repos, &mut out);
+    for repo in repos {
+        if let Some(why) = repo_blocker(&repo) {
+            out.push((repo, why));
+        }
     }
-    std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-        .flat_map(|e| git_repos(&e.path(), depth - 1))
-        .collect()
+    out
 }
 
-/// Commits of local branches that are on no remote-tracking branch.
-fn unpushed_commits(repo: &Path) -> Result<u64, String> {
+/// Finds the repositories (directories with a `.git`) under `dir`, never into a repository.
+/// Anything else that could hold work is pushed to `out`: files outside any repository and
+/// cache dirs, unreadable or too deep directories.
+fn scan(dir: &Path, depth: usize, repos: &mut Vec<PathBuf>, out: &mut Vec<Skipped>) {
+    if std::fs::symlink_metadata(dir.join(".git")).is_ok() {
+        repos.push(dir.to_path_buf());
+        return;
+    }
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) => {
+            out.push((dir.to_path_buf(), format!("cannot read it: {e}")));
+            return;
+        }
+    };
+    for e in rd {
+        let (p, t) = match e.and_then(|e| Ok((e.path(), e.file_type()?))) {
+            Ok(x) => x,
+            Err(e) => {
+                out.push((dir.to_path_buf(), format!("cannot read an entry: {e}")));
+                return;
+            }
+        };
+        if !t.is_dir() {
+            out.push((p, "a file outside any repository".into()));
+            return;
+        }
+        if is_cache(&p) || is_aside(&p) {
+            continue;
+        }
+        if depth == 0 {
+            out.push((
+                p,
+                format!("deeper than {REPO_SEARCH_DEPTH} levels, not inspected"),
+            ));
+        } else {
+            scan(&p, depth - 1, repos, out);
+        }
+    }
+}
+
+fn present(p: &Path) -> bool {
+    match std::fs::symlink_metadata(p) {
+        Ok(_) => true,
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+/// Why this repository holds work that may exist nowhere else, if it does.
+fn repo_blocker(repo: &Path) -> Option<String> {
+    let gitdir = repo.join(".git");
+    if !std::fs::symlink_metadata(&gitdir).is_ok_and(|m| m.is_dir()) {
+        return Some("its .git is not a plain directory, not inspected".into());
+    }
+    for m in [
+        "rebase-merge",
+        "rebase-apply",
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+    ] {
+        if present(&gitdir.join(m)) {
+            return Some(format!("{m} present: an operation is in progress"));
+        }
+    }
+    match unpushed_commits(repo) {
+        Ok(0) => {}
+        Ok(n) => return Some(format!("{n} unpushed commits")),
+        Err(e) => return Some(format!("cannot count unpushed commits: {e}")),
+    }
+    match git_out(
+        repo,
+        &[
+            "--no-optional-locks",
+            "status",
+            "--porcelain",
+            "--untracked-files=normal",
+        ],
+    ) {
+        Err(e) => Some(format!("cannot read its status: {e}")),
+        Ok(st) => {
+            // A cache directory that is merely not ignored is not work.
+            let dirty = st.lines().any(|l| {
+                !l.strip_prefix("?? ")
+                    .and_then(|p| p.strip_suffix('/'))
+                    .is_some_and(|p| is_cache(&repo.join(p)))
+            });
+            dirty.then(|| "uncommitted or untracked changes".into())
+        }
+    }
+}
+
+/// The name of a `repos/*` symlink that resolves into `task`, if any (`repos/<name>` is what
+/// chat opens, see `link_repo`; deleting its target would leave it dangling).
+fn linked_from_repos(workspace: &Path, task: &Path) -> Result<Option<String>, String> {
+    let repos = workspace.join("repos");
+    let rd = match std::fs::read_dir(&repos) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    let task_real = std::fs::canonicalize(task).map_err(|e| e.to_string())?;
+    for e in rd {
+        let e = e.map_err(|e| e.to_string())?;
+        let p = e.path();
+        let m = std::fs::symlink_metadata(&p).map_err(|e| e.to_string())?;
+        if !m.file_type().is_symlink() {
+            continue;
+        }
+        let target = std::fs::read_link(&p).map_err(|e| e.to_string())?;
+        let target = repos.join(target); // an absolute target replaces the base
+        let into = target.starts_with(task)
+            || std::fs::canonicalize(&p).is_ok_and(|c| c.starts_with(&task_real));
+        if into {
+            return Ok(Some(e.file_name().to_string_lossy().into_owned()));
+        }
+    }
+    Ok(None)
+}
+
+/// Runs git as the sandbox user in `repo`; stdout, or the error.
+fn git_out(repo: &Path, args: &[&str]) -> Result<String, String> {
     let mut c = std::process::Command::new("git");
-    c.args([
-        "-c",
-        "safe.directory=*",
-        "rev-list",
-        "--count",
-        "--branches",
-        "--not",
-        "--remotes",
-    ])
-    .current_dir(repo);
+    c.args(["-c", "safe.directory=*"])
+        .args(args)
+        .current_dir(repo);
     crate::privs::as_sandbox_user(&mut c);
     let out = c.output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
-    String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .parse()
-        .map_err(|e| format!("unexpected git output: {e}"))
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Commits of any ref (branches, tags, stash, notes, a detached HEAD) that are on no remote.
+fn unpushed_commits(repo: &Path) -> Result<u64, String> {
+    git_out(
+        repo,
+        &["rev-list", "--count", "--all", "--not", "--remotes"],
+    )?
+    .trim()
+    .parse()
+    .map_err(|e| format!("unexpected git output: {e}"))
 }
 
 /// Phase 3: the sccache directory, oldest files first. Deleting under a live sccache server
@@ -443,51 +635,83 @@ fn prune_sccache(workspace: &Path, low: &dyn Fn() -> bool, stopped: &dyn Fn() ->
     removed
 }
 
-/// Whether a build holds the Cargo lock of the shared target dir
-/// (`<dir>/<profile>/.cargo-lock`, flock). Removing the dir then would break that build; between
-/// builds it only costs a rebuild.
-fn build_lock_held(dir: &Path) -> bool {
+/// Takes the Cargo lock (`.cargo-lock`, flock) of every profile dir of the shared target dir
+/// `dir`: `<dir>/<profile>/` and `<dir>/<triple>/<profile>/`. `None` when a build holds one or
+/// any could not be checked. The guards must be kept until the dir is renamed aside: removing
+/// it while a build holds the lock would break that build; between builds it only costs a
+/// rebuild.
+fn lock_builds(dir: &Path) -> Option<Vec<nix::fcntl::Flock<std::fs::File>>> {
     use nix::fcntl::{Flock, FlockArg};
-    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let lock = e.path().join(".cargo-lock");
-        let Ok(f) = std::fs::File::open(&lock) else {
-            continue;
-        };
-        match Flock::lock(f, FlockArg::LockExclusiveNonblock) {
-            Ok(_) => {} // unlocks on drop
-            Err(_) => return true,
+    let subdirs = |d: &Path| -> Option<Vec<PathBuf>> {
+        let mut v = Vec::new();
+        for e in std::fs::read_dir(d).ok()? {
+            let e = e.ok()?;
+            if e.file_type().ok()?.is_dir() {
+                v.push(e.path());
+            }
+        }
+        Some(v)
+    };
+    let mut locks = Vec::new();
+    for a in subdirs(dir)? {
+        locks.push(a.join(".cargo-lock"));
+        for b in subdirs(&a)? {
+            locks.push(b.join(".cargo-lock"));
         }
     }
-    false
+    let mut guards = Vec::new();
+    for lock in locks {
+        let f = match std::fs::File::open(&lock) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
+        };
+        guards.push(Flock::lock(f, FlockArg::LockExclusiveNonblock).ok()?);
+    }
+    Some(guards)
 }
 
-/// Phase 4: the per-repo shared Cargo target dirs `<ws>/.cache/target/<owner>/<repo>`, least
-/// recently written first, except those a build holds the lock of.
+/// Phase 4: the per-repo shared Cargo target dirs `<ws>/.cache/target/<owner>/<repo>`, those of
+/// repos with a running step last, otherwise least recently written first, except those a
+/// build holds the lock of.
 fn prune_shared_targets(
     workspace: &Path,
+    steps: &dyn Registry,
     low: &dyn Fn() -> bool,
     stopped: &dyn Fn() -> bool,
 ) -> usize {
     let root = workspace.join(".cache/target");
-    let mut dirs: Vec<(SystemTime, PathBuf)> = cache_dirs(&root, 2)
+    let mut busy = HashSet::new();
+    steps.with_busy_repos(workspace, &mut |b| busy = b.clone());
+    let mut dirs: Vec<(bool, SystemTime, PathBuf)> = cache_dirs(&root, 2)
         .into_iter()
-        .map(|d| (newest(&d, 2), d))
+        .map(|d| (busy.contains(&d), newest(&d, 2), d))
         .collect();
     dirs.sort();
     let mut removed = 0;
-    for (_, d) in dirs {
+    for (_, _, d) in dirs {
         if stopped() || !low() {
             break;
         }
-        if build_lock_held(&d) {
+        if !same_dev(&d, workspace) {
             continue;
         }
-        let Some(m) = move_aside(&d) else { continue };
-        if let Err(e) = std::fs::remove_dir_all(&m) {
-            tracing::warn!(path = %m.display(), error = %e, "could not remove a pruned shared target dir");
+        // The locks are held until the dir has been renamed.
+        let Some(locks) = lock_builds(&d) else {
+            continue;
+        };
+        let moved = move_aside(&d);
+        drop(locks);
+        let Some(m) = moved else { continue };
+        match std::fs::remove_dir_all(&m) {
+            Ok(()) => {
+                removed += 1;
+                tracing::info!(dir = %d.display(), "pruned a shared target dir");
+            }
+            Err(e) => {
+                tracing::warn!(path = %m.display(), error = %e, "could not remove a pruned shared target dir")
+            }
         }
-        removed += 1;
-        tracing::info!(dir = %d.display(), "pruned a shared target dir");
     }
     removed
 }
@@ -540,9 +764,7 @@ fn disk_bytes(p: &Path) -> u64 {
 
 /// Renames a cache next to itself (see [`ASIDE`]); a cache already aside is returned as is.
 fn move_aside(c: &Path) -> Option<PathBuf> {
-    if c.file_name()
-        .is_some_and(|f| f.to_string_lossy().contains(ASIDE))
-    {
+    if is_aside(c) {
         return Some(c.to_path_buf());
     }
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
@@ -696,6 +918,7 @@ mod tests {
     struct Fake {
         busy: HashSet<String>,
         protected: HashSet<String>,
+        busy_repos: HashSet<PathBuf>,
     }
 
     impl Registry for Fake {
@@ -705,6 +928,10 @@ mod tests {
 
         fn with_protected_tasks(&self, f: &mut dyn FnMut(&HashSet<String>)) {
             f(&self.protected)
+        }
+
+        fn with_busy_repos(&self, _: &Path, f: &mut dyn FnMut(&HashSet<PathBuf>)) {
+            f(&self.busy_repos)
         }
     }
 
@@ -828,6 +1055,7 @@ mod tests {
         let fake = Fake {
             busy: ["run".to_string()].into(),
             protected: ["run".to_string(), "resumable".to_string()].into(),
+            ..Fake::default()
         };
         // Never satisfied: everything prunable goes.
         let never = ws.join("never-removed");
@@ -842,8 +1070,36 @@ mod tests {
         assert!(!ended.exists());
     }
 
+    fn never(ws: &Path) -> PathBuf {
+        let never = ws.join("never-removed");
+        std::fs::write(&never, "").unwrap();
+        never
+    }
+
+    /// Runs phase 2 only (always low); returns (removed, kept with reasons).
+    fn phase2(ws: &Path) -> (usize, Vec<Skipped>) {
+        let n = never(ws);
+        let mut skipped = Vec::new();
+        let removed = prune_task_checkouts(
+            ws,
+            &Fake::default(),
+            &|| n.exists(),
+            &|| false,
+            &mut skipped,
+        );
+        skipped.sort();
+        (removed, skipped)
+    }
+
+    /// A checkout without its cache, so only the repository decides.
+    fn clean(ws: &Path, task: &str, pushed: bool) -> PathBuf {
+        let repo = checkout(ws, task, pushed);
+        std::fs::remove_dir_all(repo.join("target")).unwrap();
+        repo
+    }
+
     #[test]
-    fn unpushed_commits_are_never_deleted() {
+    fn a_clean_fully_pushed_checkout_is_removed_and_unpushed_work_is_kept() {
         let t = tempfile::tempdir().unwrap();
         let ws = t.path();
         let local = checkout(ws, "local", false);
@@ -855,22 +1111,131 @@ mod tests {
         assert_eq!(unpushed_commits(&pushed), Ok(0));
         assert!(unpushed_commits(&broken).is_err());
 
-        let mut skipped = Vec::new();
-        let never = ws.join("never-removed");
-        std::fs::write(&never, "").unwrap();
-        let n = prune_task_checkouts(
-            ws,
-            &Fake::default(),
-            &|| never.exists(),
-            &|| false,
-            &mut skipped,
-        );
+        let (n, skipped) = phase2(ws);
         assert_eq!(n, 1);
         assert!(local.join("src.rs").exists(), "unpushed work stays");
         assert!(broken.exists());
-        assert!(!pushed.exists());
-        skipped.sort();
-        assert_eq!(skipped, vec![(broken, None), (local, Some(1))]);
+        assert!(!pushed.exists() && !ws.join("tasks/pushed").exists());
+        let paths: Vec<_> = skipped.iter().map(|(p, _)| p.clone()).collect();
+        assert_eq!(paths, vec![broken, local]);
+        assert!(skipped[1].1.contains("1 unpushed commits"), "{skipped:?}");
+    }
+
+    #[test]
+    fn work_that_exists_nowhere_else_keeps_the_checkout() {
+        let t = tempfile::tempdir().unwrap();
+        let ws = t.path();
+        let git = |r: &Path, a: &[&str]| git_in(r, a);
+
+        let detached = clean(ws, "detached", true);
+        git(&detached, &["checkout", "-q", "--detach"]);
+        git(&detached, &["commit", "-q", "--allow-empty", "-m", "wip"]);
+
+        let stash = clean(ws, "stash", true);
+        std::fs::write(stash.join("src.rs"), "changed\n").unwrap();
+        git(&stash, &["stash", "-q"]);
+
+        let tagged = clean(ws, "tagged", true);
+        git(&tagged, &["checkout", "-q", "--detach"]);
+        git(&tagged, &["commit", "-q", "--allow-empty", "-m", "t"]);
+        git(&tagged, &["tag", "keep"]);
+        git(&tagged, &["checkout", "-q", "main"]);
+
+        let untracked = clean(ws, "untracked", true);
+        std::fs::write(untracked.join("notes.txt"), "mine\n").unwrap();
+
+        let modified = clean(ws, "modified", true);
+        std::fs::write(modified.join("src.rs"), "edited\n").unwrap();
+
+        let rebasing = clean(ws, "rebasing", true);
+        std::fs::create_dir_all(rebasing.join(".git/rebase-merge")).unwrap();
+        let merging = clean(ws, "merging", true);
+        std::fs::write(merging.join(".git/MERGE_HEAD"), "0\n").unwrap();
+        let picking = clean(ws, "picking", true);
+        std::fs::write(picking.join(".git/CHERRY_PICK_HEAD"), "0\n").unwrap();
+
+        // Deeper than the old search limit of 3 levels, with an unpushed commit.
+        let deep = ws.join("tasks/deep/a/b/c/d/e/r");
+        std::fs::create_dir_all(&deep).unwrap();
+        git(&deep, &["init", "-q", "-b", "main"]);
+        std::fs::write(deep.join("f"), "x").unwrap();
+        git(&deep, &["add", "."]);
+        git(&deep, &["commit", "-q", "-m", "x"]);
+        // Beyond what is searched at all: unexplored means kept.
+        let beyond = ws.join("tasks/beyond/1/2/3/4/5/6/7/8/9/r");
+        std::fs::create_dir_all(&beyond).unwrap();
+
+        // Files and no repository.
+        let loose = ws.join("tasks/loose/out");
+        std::fs::create_dir_all(&loose).unwrap();
+        std::fs::write(loose.join("result.txt"), "data").unwrap();
+        let top_file = ws.join("tasks/topfile");
+        std::fs::create_dir_all(&top_file).unwrap();
+        std::fs::write(top_file.join("built"), "").unwrap();
+
+        // Removable: a clean pushed checkout, an empty dir, and a dir holding only a cache.
+        let ok = clean(ws, "ok", true);
+        std::fs::create_dir_all(ws.join("tasks/empty/x/y")).unwrap();
+        tag(&ws.join("tasks/cacheonly/o/r/target"));
+
+        let (n, skipped) = phase2(ws);
+        for kept in [
+            "detached",
+            "stash",
+            "tagged",
+            "untracked",
+            "modified",
+            "rebasing",
+            "merging",
+            "picking",
+            "deep",
+            "beyond",
+            "loose",
+            "topfile",
+        ] {
+            assert!(ws.join("tasks").join(kept).exists(), "{kept} was deleted");
+            assert!(
+                skipped
+                    .iter()
+                    .any(|(p, _)| p.starts_with(ws.join("tasks").join(kept))),
+                "{kept} not reported: {skipped:?}"
+            );
+        }
+        assert!(!ok.exists() && !ws.join("tasks/ok").exists());
+        assert!(!ws.join("tasks/empty").exists());
+        assert!(!ws.join("tasks/cacheonly").exists());
+        assert_eq!(n, 3, "{skipped:?}");
+    }
+
+    #[test]
+    fn a_checkout_a_repos_link_points_into_is_kept() {
+        let t = tempfile::tempdir().unwrap();
+        let ws = t.path();
+        let linked = clean(ws, "linked", true);
+        let free = clean(ws, "free", true);
+        std::fs::create_dir_all(ws.join("repos")).unwrap();
+        std::os::unix::fs::symlink(&linked, ws.join("repos/o_r")).unwrap();
+        // A relative link into a task counts too.
+        std::os::unix::fs::symlink("../tasks/rel/o/r", ws.join("repos/rel")).unwrap();
+        let rel = clean(ws, "rel", true);
+
+        let (n, skipped) = phase2(ws);
+        assert_eq!(n, 1);
+        assert!(linked.exists() && rel.exists() && !free.exists());
+        assert_eq!(skipped.len(), 2, "{skipped:?}");
+        assert!(skipped.iter().all(|(_, why)| why.contains("repos/")));
+        // The link still resolves.
+        assert!(ws.join("repos/o_r/src.rs").exists());
+    }
+
+    #[test]
+    fn nothing_is_pruned_across_a_mount_point() {
+        let t = tempfile::tempdir().unwrap();
+        assert!(!same_dev(&t.path().join("x"), t.path()), "missing path");
+        std::fs::create_dir(t.path().join("x")).unwrap();
+        assert!(same_dev(&t.path().join("x"), t.path()));
+        // /proc is its own filesystem.
+        assert!(!same_dev(Path::new("/proc"), t.path()));
     }
 
     #[test]
@@ -901,9 +1266,68 @@ mod tests {
         };
         assert_eq!(pass(ws, &fake, &never), 1);
         assert!(!free.exists() && held.exists());
+        // While the guards are held, nobody else gets the locks.
+        assert!(lock_builds(&held).is_none());
         drop(lock);
         assert_eq!(pass(ws, &fake, &never), 1);
         assert!(!held.exists());
+    }
+
+    #[test]
+    fn locks_are_held_until_the_dir_is_gone_and_found_two_levels_down() {
+        use nix::fcntl::{Flock, FlockArg};
+        let t = tempfile::tempdir().unwrap();
+        let ws = t.path();
+        let d = ws.join(".cache/target/o/r");
+        tag(&d);
+        std::fs::create_dir_all(d.join("x86_64-unknown-linux-musl/release")).unwrap();
+        std::fs::create_dir_all(d.join("debug")).unwrap();
+        std::fs::write(d.join("debug/.cargo-lock"), "").unwrap();
+        let deep = d.join("x86_64-unknown-linux-musl/release/.cargo-lock");
+        std::fs::write(&deep, "").unwrap();
+        // All profile dirs are locked at once.
+        let guards = lock_builds(&d).expect("free");
+        assert_eq!(guards.len(), 2);
+        assert!(lock_builds(&d).is_none(), "held by the first call");
+        drop(guards);
+        // A build in a `<triple>/<profile>` dir protects the target dir.
+        let build = Flock::lock(
+            std::fs::File::open(&deep).unwrap(),
+            FlockArg::LockExclusiveNonblock,
+        )
+        .unwrap();
+        assert!(lock_builds(&d).is_none());
+        assert_eq!(pass(ws, &Fake::default(), &never(ws)), 0);
+        assert!(d.exists());
+        drop(build);
+        assert_eq!(pass(ws, &Fake::default(), &never(ws)), 1);
+        assert!(!d.exists());
+    }
+
+    #[test]
+    fn a_busy_repos_target_goes_last() {
+        let t = tempfile::tempdir().unwrap();
+        let ws = t.path();
+        let (busy, idle) = (
+            ws.join(".cache/target/o/busy"),
+            ws.join(".cache/target/o/idle"),
+        );
+        tag(&busy);
+        tag(&idle);
+        // The busy one is older, so it would go first by age.
+        for d in [&busy, &idle] {
+            let age = if *d == busy { 7200 } else { 60 };
+            std::fs::File::open(d)
+                .unwrap()
+                .set_modified(SystemTime::now() - Duration::from_secs(age))
+                .unwrap();
+        }
+        let fake = Fake {
+            busy_repos: [busy.clone()].into(),
+            ..Fake::default()
+        };
+        assert_eq!(pass(ws, &fake, &idle), 1);
+        assert!(!idle.exists() && busy.exists());
     }
 
     #[test]
@@ -956,6 +1380,39 @@ mod tests {
         let n = prune_pass(ws, &Fake::default(), &|| cache_left.exists(), &|| false, 20);
         assert_eq!(n, 3);
         assert!(!cache_left.exists() && !task_left.exists() && !target_left.exists());
+    }
+
+    #[test]
+    fn only_the_exact_aside_pattern_is_a_leftover() {
+        let a = |n: &str| is_aside(Path::new(n));
+        assert!(a(".target.enzarb-prune-12-3"));
+        assert!(a("/x/.o.enzarb-prune-1-2"));
+        assert!(!a("target.enzarb-prune-1-2"));
+        assert!(!a(".target.enzarb-prune-1"));
+        assert!(!a(".target.enzarb-prune-1-2-3"));
+        assert!(!a(".target.enzarb-prune-a-b"));
+        assert!(!a(".enzarb-prune-1-2"));
+        assert!(!a("my.enzarb-prune-notes"));
+        assert!(!a(".keep.enzarb-prune-1-2.bak"));
+
+        let t = tempfile::tempdir().unwrap();
+        let ws = t.path();
+        // Lookalikes a user could have are not deleted.
+        let lookalike = ws.join("tasks/t/o/r/.mine.enzarb-prune-notes");
+        let almost = ws.join("tasks/t/o/r/x.enzarb-prune-1-2");
+        // A real leftover inside a running task's checkout is left alone, one elsewhere goes.
+        let busy_left = ws.join("tasks/run/o/r/.target.enzarb-prune-1-1");
+        let idle_left = ws.join("tasks/t/o/r/.target.enzarb-prune-1-2");
+        for d in [&lookalike, &almost, &busy_left, &idle_left] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let fake = Fake {
+            protected: ["run".to_string()].into(),
+            ..Fake::default()
+        };
+        assert_eq!(sweep_leftovers(ws, &fake), 1);
+        assert!(lookalike.exists() && almost.exists() && busy_left.exists());
+        assert!(!idle_left.exists());
     }
 
     #[test]

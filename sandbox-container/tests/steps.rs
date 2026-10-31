@@ -1071,7 +1071,7 @@ async fn workspace_prune_keeps_resumable_tasks_and_removes_ended_ones() {
     let mut done = step(
         "done-1",
         StepExec::Command {
-            run: "touch built".into(),
+            run: "true".into(),
             tools: vec![],
         },
         vec![],
@@ -1091,7 +1091,7 @@ async fn workspace_prune_keeps_resumable_tasks_and_removes_ended_ones() {
         fin.unwrap().environment.unwrap().kind,
         EnvironmentKind::DiskFull
     );
-    assert!(env.ws.join("tasks/task-done/built").exists());
+    assert!(env.ws.join("tasks/task-done").exists());
     let removed = common::read_only(&env.ws, || {
         sandbox_init::workspace_prune::prune_once(&env.ws, &steps, 100)
     });
@@ -1131,29 +1131,12 @@ async fn a_step_prunes_a_low_workspace_before_it_starts() {
     assert!(env.ws.join("tasks/task-1/o/r/.git").exists());
 }
 
-/// A full workspace ends the step as `disk_full` before any clone is attempted. Needs a mount;
-/// skipped where that is not permitted.
+/// A full workspace ends the step as `disk_full` before any clone is attempted. The disk check
+/// is injected, so this runs unprivileged.
 #[tokio::test]
 async fn a_step_on_a_full_workspace_fails_fast_without_cloning() {
     let env = Env::new();
-    let mounted = Command::new("mount")
-        .args(["-t", "tmpfs", "-o", "size=64k"])
-        .arg("tmpfs")
-        .arg(&env.ws)
-        .status()
-        .is_ok_and(|s| s.success());
-    if !mounted {
-        eprintln!("skipped: cannot mount a tmpfs here");
-        return;
-    }
-    let addr = env.server().await;
-    // Fill what is left (the write ends with ENOSPC).
-    let _ = Command::new("dd")
-        .arg("if=/dev/zero")
-        .arg(format!("of={}", env.ws.join("fill").display()))
-        .args(["bs=1k", "count=1024"])
-        .stderr(std::process::Stdio::null())
-        .status();
+    let (addr, _) = env.server_cfg(full_disk).await;
     let (s, mut ev) = connect(addr).await;
     let st = step(
         "full-fast",
@@ -1166,11 +1149,15 @@ async fn a_step_on_a_full_workspace_fails_fast_without_cloning() {
     start(&s, &mut ev, st).await;
     let (_, fin) = collect(&mut ev, "full-fast", |_| false).await;
     let cloned = env.ws.join("tasks/task-1/o/r").exists();
-    let _ = Command::new("umount").arg(&env.ws).status();
     let fin = fin.unwrap();
     assert_eq!(fin.exit, "failure", "{fin:?}");
     assert_eq!(fin.environment.unwrap().kind, EnvironmentKind::DiskFull);
     assert!(!cloned, "no clone was attempted");
+}
+
+/// Makes the workspace look full (see `Config::workspace_full_probe`).
+fn full_disk(c: &mut Config) {
+    c.workspace_full_probe = Some(|_| Some("workspace has 0 free blocks (statvfs)".into()));
 }
 
 /// A workspace with `start_ref` starts the new branch at that ref (a pull request head, which
@@ -1386,27 +1373,26 @@ async fn a_hostname_error_in_the_step_output_is_a_code_failure() {
     assert_eq!(fin.environment, None);
 }
 
-/// A real full filesystem needs a mount; skipped where that is not permitted.
+/// A full workspace is reported as `disk_full` (the disk check is injected).
 #[tokio::test]
 async fn a_full_workspace_is_disk_full() {
     let env = Env::new();
-    let mounted = Command::new("mount")
-        .args(["-t", "tmpfs", "-o", "size=64k"])
-        .arg("tmpfs")
-        .arg(&env.ws)
-        .status()
-        .is_ok_and(|s| s.success());
-    if !mounted {
-        eprintln!("skipped: cannot mount a tmpfs here");
-        return;
-    }
-    let fin = run_cmd(
-        &env,
-        "env-full",
-        "dd if=/dev/zero of=big bs=1k count=1024 2>/dev/null; exit 1".into(),
+    let (addr, _) = env.server_cfg(full_disk).await;
+    let (s, mut ev) = connect(addr).await;
+    start(
+        &s,
+        &mut ev,
+        step(
+            "env-full",
+            StepExec::Command {
+                run: "exit 1".into(),
+                tools: vec![],
+            },
+            vec![],
+        ),
     )
     .await;
-    let _ = Command::new("umount").arg(&env.ws).status();
+    let fin = collect(&mut ev, "env-full", |_| false).await.1.unwrap();
     assert_eq!(fin.exit, "failure", "{fin:?}");
     assert_eq!(fin.environment.unwrap().kind, EnvironmentKind::DiskFull);
 }
