@@ -141,6 +141,7 @@ export async function projectTasks(
 				githubUrl: p.url,
 				// The run that opened it: branch `ez/<workflow>/<run id>`.
 				runUrl: runLinkOfBranch(project.name, p.branch, runs),
+				openedBy: openedByBranch(p.branch, runs),
 				at: p.updatedAt,
 				branch: p.branch,
 				draft: p.draft
@@ -167,6 +168,11 @@ export async function projectTasks(
 	return { tasks, notes };
 }
 
+function openedByBranch(branch: string, runs: RunSummary[]) {
+	const r = runs.find((x) => x.id === branch.split('/')[2]);
+	return r ? { id: r.id, workflow: r.workflow } : null;
+}
+
 function runLinkOfBranch(project: string, branch: string, runs: RunSummary[]): string | null {
 	const id = branch.split('/')[2];
 	return id && runs.some((r) => r.id === id) ? runUrl(project, id) : null;
@@ -177,7 +183,7 @@ export type ActionResult =
 
 const no = (message: string): ActionResult => ({ ok: false, message });
 
-async function allowed(
+export async function allowed(
 	deps: ActionDeps,
 	login: string,
 	project: Pick<ProjectView, 'repositories'>,

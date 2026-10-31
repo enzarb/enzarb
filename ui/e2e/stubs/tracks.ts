@@ -147,7 +147,69 @@ const failedRun: RunDetail = {
 	finishedAt: NOW,
 	nodeRuns: []
 };
-const more: RunDetail[] = [waitRun, failedRun];
+
+/** Waiting at a plan approval: two runs, so one spec can approve and another revise. */
+export const E2E_PLAN_RUN_ID = '66666666-6666-4666-8666-666666666666';
+export const E2E_PLAN_REVISE_RUN_ID = '77777777-7777-4777-8777-777777777777';
+const PLAN =
+	'## Plan\n\n1. Guard the start-up path\n2. Add a **regression test**\n\n<script>alert(1)</script>';
+const planRun = (id: string, number: number, eventId: number): RunDetail => ({
+	...run,
+	id,
+	workflow: 'implement-labeled-issues',
+	subject: { kind: 'issue', number },
+	eventId,
+	status: 'waiting',
+	currentNode: 'approve_plan',
+	waitUntil: '2026-11-13T12:00:00.000Z',
+	nodeRuns: [
+		{
+			...run.nodeRuns[0]!,
+			node: 'plan',
+			outputs: { result: { plan: PLAN }, exit: 'success' }
+		},
+		{
+			...run.nodeRuns[2]!,
+			node: 'approve_plan',
+			wait: {
+				on: ['manual', 'issue_comment.created'],
+				if: null,
+				timeout_secs: 1209600,
+				until: '2026-11-13T12:00:00.000Z'
+			}
+		}
+	]
+});
+/** The newest review of PR #50: its summary is the cliff notes. */
+const reviewRun: RunDetail = {
+	...run,
+	id: '88888888-8888-4888-8888-888888888888',
+	workflow: 'review-pull-requests',
+	subject: { kind: 'pull_request', number: 50 },
+	eventId: 9,
+	status: 'done',
+	currentNode: null,
+	finishedAt: NOW,
+	nodeRuns: [
+		{
+			...run.nodeRuns[0]!,
+			node: 'review',
+			outputs: {
+				result: { summary: '**Looks good.** The guard fixes the crash; one nit on naming.' }
+			}
+		}
+	]
+};
+const more: RunDetail[] = [
+	waitRun,
+	failedRun,
+	planRun(E2E_PLAN_RUN_ID, 13, 4),
+	planRun(E2E_PLAN_REVISE_RUN_ID, 14, 5),
+	reviewRun
+];
+
+/** What resume was asked, newest first. */
+export const resumed: { id: string; actor: string; action: string; text?: string }[] = [];
 
 const client: TracksClient = {
 	runs: async ({ project, eventIds }) =>
@@ -158,7 +220,19 @@ const client: TracksClient = {
 		const r = [run, ...more].find((x) => x.id === id);
 		return r ? structuredClone(r) : null;
 	},
-	resumeRun: async () => ({ result: 'ok' }),
+	resumeRun: async ({ id, actor, action, text }) => {
+		const r = more.find((x) => x.id === id);
+		if (!r || r.status !== 'waiting') return { result: 'not_waiting' };
+		if (action !== 'approve' && action !== 'revise')
+			return { result: 'not_accepted', message: 'only approve or revise' };
+		resumed.unshift({ id, actor, action, text });
+		// A revision re-plans and parks at the approval again; an approval moves on.
+		if (action === 'approve') {
+			r.status = 'running';
+			r.currentNode = 'implement';
+		}
+		return { result: 'ok' };
+	},
 	stopRun: async (id) => {
 		if (id !== E2E_RUN_ID || run.status !== 'running') return false;
 		run.status = 'cancelled';

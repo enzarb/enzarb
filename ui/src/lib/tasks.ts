@@ -54,6 +54,8 @@ export interface ReviewTask extends Base {
 	kind: 'review';
 	branch: string;
 	draft: boolean;
+	/** The run that opened it (branch `ez/<workflow>/<run id>`), when tracks knows it. */
+	openedBy: { id: string; workflow: string } | null;
 }
 
 /** An issue labelled `triage` that no implement run has started on. */
@@ -98,7 +100,7 @@ export interface ActionOutcome {
 	runId?: string | null;
 }
 
-export type DefaultActionId = 'implement' | 'retry' | 'stop' | 'diff';
+export type DefaultActionId = 'implement' | 'retry' | 'stop' | 'merge';
 
 /** The primary button of a task's detail. */
 export function defaultAction(t: Task): { id: DefaultActionId; label: string } {
@@ -110,7 +112,7 @@ export function defaultAction(t: Task): { id: DefaultActionId; label: string } {
 		case 'wait':
 			return { id: 'stop', label: 'Stop for now' };
 		case 'review':
-			return { id: 'diff', label: 'Open diff' };
+			return { id: 'merge', label: 'Approve & merge' };
 	}
 }
 
@@ -135,6 +137,17 @@ export const KIND_NAMES: Record<TaskKind, string> = {
 	review: 'Pull request',
 	triaged: 'Issue'
 };
+
+/** The pull request behind a review task, for loading its diff. */
+export function pullOfTask(
+	list: TaskList | undefined,
+	key: string | null
+): { project: string; repo: string; number: number } | null {
+	const t = list?.tasks.find((x) => x.key === key);
+	return t && t.kind === 'review' && t.number
+		? { project: t.project, repo: t.repo, number: t.number }
+		: null;
+}
 
 /** The run behind the task with this key (`run:<id>`), for loading its nodes. */
 export function runOfTask(

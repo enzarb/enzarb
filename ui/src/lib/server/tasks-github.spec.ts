@@ -29,6 +29,66 @@ function setup(fetchImpl: () => Promise<Response>) {
 	return { reads, f, advance: (ms: number) => (t += ms) };
 }
 
+describe('review reads', () => {
+	it('reads files with patches (binary files have none) and caches them', async () => {
+		const { reads, f } = setup(async () =>
+			json([
+				{
+					filename: 'a.ts',
+					status: 'modified',
+					additions: 1,
+					deletions: 0,
+					patch: '@@ -1 +1 @@\n+x'
+				},
+				{ filename: 'b.png', status: 'added', additions: 0, deletions: 0 }
+			])
+		);
+		const r = await reads.pullFiles('o/r', 5);
+		expect(r.items.map((x) => [x.filename, x.patch !== undefined])).toEqual([
+			['a.ts', true],
+			['b.png', false]
+		]);
+		await reads.pullFiles('o/r', 5);
+		expect(f).toHaveBeenCalledTimes(1);
+	});
+
+	it('reads check runs from the wrapper object, and fresh skips the cache', async () => {
+		const { reads, f } = setup(async () =>
+			json({
+				total_count: 1,
+				check_runs: [{ name: 'build', status: 'completed', conclusion: 'success', html_url: 'u' }]
+			})
+		);
+		expect((await reads.checkRuns('o/r', 'sha')).items).toEqual([
+			{ name: 'build', status: 'completed', conclusion: 'success', url: 'u' }
+		]);
+		await reads.checkRuns('o/r', 'sha');
+		expect(f).toHaveBeenCalledTimes(1);
+		await reads.checkRuns('o/r', 'sha', { fresh: true });
+		expect(f).toHaveBeenCalledTimes(2);
+	});
+
+	it('reads one pull request and only comments with the ez-tracks marker', async () => {
+		const one = setup(async () =>
+			json({
+				number: 5,
+				title: 'T',
+				html_url: 'u',
+				draft: false,
+				head: { sha: 'abc' },
+				mergeable: null,
+				mergeable_state: 'unknown'
+			})
+		);
+		expect((await one.reads.pull('o/r', 5)).pull).toMatchObject({
+			headSha: 'abc',
+			mergeable: null
+		});
+		const c = setup(async () => json([{ body: 'hi' }, { body: 'x <!-- ez-tracks:r:n:1 -->' }]));
+		expect((await c.reads.markedComments('o/r', 5)).items).toEqual(['x <!-- ez-tracks:r:n:1 -->']);
+	});
+});
+
 describe('tasks GitHub reads', () => {
 	it('keeps only ez/* pull requests and caches per repository', async () => {
 		const { reads, f, advance } = setup(async () =>

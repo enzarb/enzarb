@@ -1,4 +1,11 @@
-import { implementIssue, retryTaskRun, stopTaskRun } from '#lib/tasks.remote.ts';
+import {
+	answerTaskPlan,
+	approveAndMergePull,
+	implementIssue,
+	retryTaskRun,
+	stopTaskRun
+} from '#lib/tasks.remote.ts';
+import type { MergeOutcome } from '#lib/pull-review.ts';
 import type { ActionOutcome, Task } from '#lib/tasks.ts';
 
 /** Anything a command's `.updates(...)` accepts: the queries the page shows. */
@@ -30,6 +37,20 @@ export function taskActions(queries: () => Refreshable[]) {
 				t.kind === 'wait'
 					? await stopTaskRun({ name: t.project, id: t.runId }).updates(...queries())
 					: { ok: false, message: 'Only waiting runs can be stopped.' }
-			)
+			),
+		answerPlan: async (t: Task, action: 'approve' | 'revise', text?: string) =>
+			outcome(
+				t.kind === 'wait'
+					? await answerTaskPlan({ name: t.project, id: t.runId, action, text }).updates(
+							...queries()
+						)
+					: { ok: false, message: 'Only waiting runs have a plan to answer.' }
+			),
+		mergePull: async (t: Task): Promise<MergeOutcome> =>
+			t.kind === 'review' && t.number
+				? await approveAndMergePull({ name: t.project, repo: t.repo, number: t.number }).updates(
+						...queries()
+					)
+				: { ok: false, message: 'Only pull requests can be merged.', steps: [] }
 	};
 }

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { repoContext } from '#lib/github-links.ts';
+	import type { MergeOutcome, MergeStep, PullReview } from '#lib/pull-review.ts';
 	import type { RunDetail } from '#lib/runs.ts';
 	import {
 		groupTasks,
@@ -12,6 +13,9 @@
 	} from '#lib/tasks.ts';
 	import Button from './form/Button.svelte';
 	import RunLink from './RunLink.svelte';
+	import MergeSteps from './tasks/MergeSteps.svelte';
+	import PlanApproval from './tasks/PlanApproval.svelte';
+	import PullReviewView from './tasks/PullReviewView.svelte';
 	import TaskDetail from './tasks/TaskDetail.svelte';
 	import TaskSidebar from './tasks/TaskSidebar.svelte';
 	import EmptyState from './ui/EmptyState.svelte';
@@ -28,12 +32,16 @@
 		href,
 		backHref,
 		run,
+		plan = null,
+		review,
 		showProject = false,
 		failed = false,
 		retry,
 		implement,
 		retryRun,
-		stop
+		stop,
+		answerPlan,
+		mergePull
 	}: {
 		/** `undefined` while the first load is in flight. */
 		list: TaskList | undefined;
@@ -45,6 +53,10 @@
 		backHref: string;
 		/** The selected run task's run; see TaskDetail. */
 		run?: RunDetail | null;
+		/** The rendered plan of the selected waiting run, when it waits at a plan approval. */
+		plan?: { html: string } | null;
+		/** The selected pull request's diff and notes: `undefined` loading, `null` unreadable. */
+		review?: PullReview | null;
 		/** The top-level page spans Projects: show which one a task belongs to. */
 		showProject?: boolean;
 		failed?: boolean;
@@ -52,6 +64,8 @@
 		implement: (t: Task) => Promise<ActionOutcome>;
 		retryRun: (t: Task) => Promise<ActionOutcome>;
 		stop: (t: Task) => Promise<ActionOutcome>;
+		answerPlan: (t: Task, action: 'approve' | 'revise', text?: string) => Promise<ActionOutcome>;
+		mergePull: (t: Task) => Promise<MergeOutcome>;
 	} = $props();
 
 	let busy = $state<string | null>(null);
@@ -61,14 +75,50 @@
 		null
 	);
 
+	/** The Approve & merge steps of the selected pull request, once a merge was tried. */
+	let steps = $state<MergeStep[]>([]);
+
 	let shown = untrack(() => selected);
 	$effect(() => {
 		if (selected === shown) return;
 		shown = selected;
-		untrack(() => (done = null));
+		untrack(() => {
+			done = null;
+			steps = [];
+		});
 	});
 
+	async function answer(t: Task, action: 'approve' | 'revise', text?: string) {
+		const r = await answerPlan(t, action, text);
+		if (r.ok && 'runId' in t)
+			done = {
+				message: r.message,
+				workflow: t.kind === 'wait' ? t.workflow : '',
+				project: t.project,
+				runId: t.runId
+			};
+		return r;
+	}
+
+	async function merge(t: Task) {
+		busy = t.key;
+		message = '';
+		done = null;
+		steps = [];
+		try {
+			const r = await mergePull(t);
+			steps = r.steps;
+			if (r.ok) done = { message: r.message, workflow: '', project: t.project, runId: '' };
+			else message = r.message;
+		} catch {
+			message = 'That did not work. Try again.';
+		} finally {
+			busy = null;
+		}
+	}
+
 	async function act(t: Task, id: DefaultActionId) {
+		if (id === 'merge') return merge(t);
 		const run =
 			id === 'implement' ? implement : id === 'retry' ? retryRun : id === 'stop' ? stop : null;
 		if (!run) return;
@@ -130,6 +180,7 @@
 							/>
 						{/if}
 					</p>
+					{#if steps.length && !current}<MergeSteps {steps} />{/if}
 				{/if}
 				{#if current}
 					<TaskDetail
@@ -137,8 +188,24 @@
 						{run}
 						{context}
 						busy={busy === current.key}
+						plan={!!plan}
 						act={(id) => act(current, id)}
-					/>
+					>
+						{#snippet sections()}
+							{#if plan && current.kind === 'wait'}
+								<PlanApproval html={plan.html} answer={(a, text) => answer(current, a, text)} />
+							{:else if current.kind === 'review'}
+								<PullReviewView
+									{review}
+									project={current.project}
+									url={current.githubUrl ??
+										`https://github.com/${current.repo}/pull/${current.number}`}
+									{steps}
+									merging={busy === current.key}
+								/>
+							{/if}
+						{/snippet}
+					</TaskDetail>
 				{:else if !done}
 					<p class="ez-muted ez-tasks__none">Select a task to see it here.</p>
 				{/if}

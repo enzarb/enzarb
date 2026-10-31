@@ -31,6 +31,10 @@ export default mergeConfig(
 					replacement: path.resolve(import.meta.dirname, 'e2e/stubs/tasks-github.ts')
 				},
 				{
+					find: /^(#lib\/server|\.)\/tasks-github-writes\.ts$/,
+					replacement: path.resolve(import.meta.dirname, 'e2e/stubs/tasks-github-writes.ts')
+				},
+				{
 					find: /^(#lib\/server|\.)\/tracks\.ts$/,
 					replacement: path.resolve(import.meta.dirname, 'e2e/stubs/tracks.ts')
 				}
