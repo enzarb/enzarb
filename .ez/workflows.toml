@@ -12,16 +12,21 @@ instruction = """
 Review pull request #{{ event.pull_request.number }}: {{ event.pull_request.title }}
 
 {{ event.pull_request.body }}"""
-next = [{ if = "exit == 'success' and result", to = "comment" }, { to = "review_failed" }]
 
+[workflows.review-pull-requests.nodes.review.result.summary]
+type = "string"
+
+[[workflows.review-pull-requests.nodes.review.next]]
+if = "exit == 'success' and result"
+to = "comment"
+
+[[workflows.review-pull-requests.nodes.review.next]]
+to = "review_failed"
 
 [workflows.review-pull-requests.nodes.review_failed]
 type = "end"
 status = "failed"
 reason = "the reviewer failed: {{ nodes.review.error if nodes.review.error else 'no result was submitted' }}"
-
-[workflows.review-pull-requests.nodes.review.result.summary]
-type = "string"
 
 [workflows.review-pull-requests.nodes.comment]
 type = "action"
@@ -45,16 +50,21 @@ instruction = """
 Issue #{{ event.issue.number }}: {{ event.issue.title }}
 
 {{ event.issue.body }}"""
-next = [{ if = "exit == 'success' and result", to = "label" }, { to = "triage_failed" }]
 
+[workflows.triage-issues.nodes.triage.result.summary]
+type = "string"
+
+[[workflows.triage-issues.nodes.triage.next]]
+if = "exit == 'success' and result"
+to = "label"
+
+[[workflows.triage-issues.nodes.triage.next]]
+to = "triage_failed"
 
 [workflows.triage-issues.nodes.triage_failed]
 type = "end"
 status = "failed"
 reason = "the triager failed: {{ nodes.triage.error if nodes.triage.error else 'no result was submitted' }}"
-
-[workflows.triage-issues.nodes.triage.result.summary]
-type = "string"
 
 [workflows.triage-issues.nodes.label]
 type = "action"
@@ -103,6 +113,10 @@ Revise the plan using this feedback:
 
 [workflows.implement-labeled-issues.nodes.plan.result.plan]
 type = "string"
+
+[[workflows.implement-labeled-issues.nodes.plan.next]]
+if = "exit != 'success' or not result"
+to = "plan_failed"
 
 [[workflows.implement-labeled-issues.nodes.plan.next]]
 if = "vars.approve_plan"
@@ -168,6 +182,11 @@ next = "done"
 [workflows.implement-labeled-issues.nodes.done]
 type = "end"
 status = "done"
+
+[workflows.implement-labeled-issues.nodes.plan_failed]
+type = "end"
+status = "failed"
+reason = "the planner failed: {{ nodes.plan.error if nodes.plan.error else 'no plan was submitted' }}"
 
 [workflows.implement-labeled-issues.nodes.failed]
 type = "end"
