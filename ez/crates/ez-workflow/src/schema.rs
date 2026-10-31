@@ -111,7 +111,7 @@ impl NodeType {
     /// variables.
     pub fn outputs(self) -> &'static [&'static str] {
         match self {
-            Self::Agent => &["result", "git", "exit"],
+            Self::Agent => &["result", "git", "exit", "error"],
             Self::Command => &["exit_code", "output", "json"],
             Self::Action => &["number", "url"],
             Self::Wait => &["event", "timed_out"],

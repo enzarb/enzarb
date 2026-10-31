@@ -1389,6 +1389,7 @@ pub fn outputs_of(rendered: &Rendered, fin: &StepFinished) -> Value {
                 "result": fin.result.clone().unwrap_or(Value::Null),
                 "git": git,
                 "exit": fin.exit,
+                "error": fin.error.clone().map_or(Value::Null, Value::String),
             })
         }
         _ => {

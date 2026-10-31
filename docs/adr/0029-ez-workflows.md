@@ -93,7 +93,7 @@ status = "cancelled"
 
 | Type | Runs in | Does | Outputs |
 |---|---|---|---|
-| `agent` | sandbox | `ez acp` in `mode` with `instruction` as the first user turn; with `result`, ez offers `submit_result` with that schema; with `push = true`, sandbox-init commits and pushes the run branch | `result`, `git {branch, head_sha, pushed}`, `exit` |
+| `agent` | sandbox | `ez acp` in `mode` with `instruction` as the first user turn; with `result`, ez offers `submit_result` with that schema; with `push = true`, sandbox-init commits and pushes the run branch | `result`, `git {branch, head_sha, pushed}`, `exit`, `error` (why a failed step failed, else null) |
 | `command` | sandbox | Either `task` + `args` (`mise run <task> -- <args>`, preferred: the task is reviewed in the repo and needs no quoting) or `run` (a shell string, `sh -c`, rendered as a template with every value shell-quoted), in the run's worktree | `exit_code`, `output` (tail), `json` (parsed stdout when it is JSON) |
 | `action` | tracks | One GitHub call with the App's installation token: `comment`, `open_pull_request`, `add_labels`, `remove_labels` | the created object's `number` / `url` |
 | `wait` | tracks | Suspends until an event about the run's subject matches `on` and `if`, or `timeout` passes | `event`, `timed_out` |
