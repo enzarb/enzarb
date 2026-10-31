@@ -28,6 +28,7 @@ const reads: GithubReads = {
 						{
 							number: 9,
 							title: 'Triaged bug',
+							bodyTruncated: false,
 							body: 'The app crashes on start.',
 							url: 'https://github.com/e2e-org/app/issues/9',
 							updatedAt: '2026-10-30T12:06:00.000Z'

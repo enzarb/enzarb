@@ -1,8 +1,17 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { repoContext } from '#lib/github-links.ts';
 	import type { RunDetail } from '#lib/runs.ts';
-	import { groupTasks, type DefaultActionId, type Task, type TaskList } from '#lib/tasks.ts';
+	import {
+		groupTasks,
+		IMPLEMENT_WORKFLOW,
+		type ActionOutcome,
+		type DefaultActionId,
+		type Task,
+		type TaskList
+	} from '#lib/tasks.ts';
 	import Button from './form/Button.svelte';
+	import RunLink from './RunLink.svelte';
 	import TaskDetail from './tasks/TaskDetail.svelte';
 	import TaskSidebar from './tasks/TaskSidebar.svelte';
 	import EmptyState from './ui/EmptyState.svelte';
@@ -40,13 +49,24 @@
 		showProject?: boolean;
 		failed?: boolean;
 		retry: () => void;
-		implement: (t: Task) => Promise<string>;
-		retryRun: (t: Task) => Promise<string>;
-		stop: (t: Task) => Promise<string>;
+		implement: (t: Task) => Promise<ActionOutcome>;
+		retryRun: (t: Task) => Promise<ActionOutcome>;
+		stop: (t: Task) => Promise<ActionOutcome>;
 	} = $props();
 
 	let busy = $state<string | null>(null);
 	let message = $state('');
+	/** A finished action, shown in the detail pane until another task is selected. */
+	let done = $state<{ message: string; workflow: string; project: string; runId: string } | null>(
+		null
+	);
+
+	let shown = untrack(() => selected);
+	$effect(() => {
+		if (selected === shown) return;
+		shown = selected;
+		untrack(() => (done = null));
+	});
 
 	async function act(t: Task, id: DefaultActionId) {
 		const run =
@@ -54,8 +74,15 @@
 		if (!run) return;
 		busy = t.key;
 		message = '';
+		done = null;
 		try {
-			message = await run(t);
+			const r = await run(t);
+			if (r.ok) {
+				const workflow =
+					id === 'implement' ? IMPLEMENT_WORKFLOW : 'workflow' in t ? t.workflow : '';
+				const runId = r.runId ?? ('runId' in t && id === 'stop' ? t.runId : null);
+				done = { message: r.message, workflow, project: t.project, runId: runId ?? '' };
+			} else message = r.message;
 		} catch {
 			message = 'That did not work. Try again.';
 		} finally {
@@ -86,11 +113,25 @@
 			description="Runs parked at a wait, failed runs, pull requests from ez branches and triaged issues show up here."
 		/>
 	{:else}
-		<div class="ez-tasks" data-selected={current ? 'true' : 'false'}>
+		<div class="ez-tasks" data-selected={current || done ? 'true' : 'false'}>
 			<TaskSidebar {groups} selected={current?.key ?? null} {href} {showProject} {context} />
 			<div class="ez-tasks__pane">
-				{#if current}
+				{#if current || done}
 					<a class="ez-tasks__back" href={backHref}>All tasks</a>
+				{/if}
+				{#if done}
+					<p class="ez-tasks__done" role="status" data-testid="task-done">
+						{done.message}
+						{#if done.runId}
+							<RunLink
+								workflow={done.workflow}
+								id={done.runId}
+								href="/projects/{encodeURIComponent(done.project)}/runs/{done.runId}"
+							/>
+						{/if}
+					</p>
+				{/if}
+				{#if current}
 					<TaskDetail
 						task={current}
 						{run}
@@ -98,7 +139,7 @@
 						busy={busy === current.key}
 						act={(id) => act(current, id)}
 					/>
-				{:else}
+				{:else if !done}
 					<p class="ez-muted ez-tasks__none">Select a task to see it here.</p>
 				{/if}
 			</div>

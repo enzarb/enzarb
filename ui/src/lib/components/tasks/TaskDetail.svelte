@@ -86,7 +86,13 @@
 		{#if task.kind === 'triaged'}
 			<Section title="Issue">
 				{#if task.body}
-					<pre class="ez-tasks__body">{task.body}</pre>
+					<pre class="ez-tasks__body">{task.body}{task.bodyTruncated ? '…' : ''}</pre>
+					{#if task.bodyTruncated}
+						<p class="ez-muted">
+							Read the rest on
+							<SubjectLink repo={task.repo} number={task.number} url={task.githubUrl} {context} />
+						</p>
+					{/if}
 				{:else}
 					<p class="ez-muted">The issue has no description.</p>
 				{/if}

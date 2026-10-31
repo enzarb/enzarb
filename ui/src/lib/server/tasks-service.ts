@@ -156,6 +156,7 @@ export async function projectTasks(
 				number: i.number,
 				title: i.title,
 				body: i.body,
+				bodyTruncated: i.bodyTruncated,
 				githubUrl: i.url,
 				runUrl: null,
 				at: i.updatedAt

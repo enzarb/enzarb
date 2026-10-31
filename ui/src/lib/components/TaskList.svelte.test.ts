@@ -55,9 +55,9 @@ const props = (list: Tasks | undefined, over = {}) => ({
 	href: (key: string) => `/tasks?task=${encodeURIComponent(key)}`,
 	backHref: '/tasks',
 	retry: () => {},
-	implement: vi.fn(async () => 'Started.'),
-	retryRun: vi.fn(async () => 'Restarted.'),
-	stop: vi.fn(async () => 'Stopping.'),
+	implement: vi.fn(async () => ({ ok: true, message: 'Started.', runId: 'abcdef1234567' })),
+	retryRun: vi.fn(async () => ({ ok: true, message: 'Restarted.', runId: null })),
+	stop: vi.fn(async () => ({ ok: true, message: 'Stopping.', runId: null })),
 	...over
 });
 
@@ -103,6 +103,56 @@ describe('TaskList', () => {
 		await page.getByRole('button', { name: 'Implement' }).click();
 		expect(p.implement).toHaveBeenCalledWith(tasks[3]);
 		await expect.element(page.getByText('Started.')).toBeVisible();
+		await expect
+			.element(page.getByRole('link', { name: 'implement-labeled-issues #abcdef12' }))
+			.toHaveAttribute('href', '/projects/p/runs/abcdef1234567');
+	});
+
+	it('keeps the confirmation when the task leaves the list, until another is selected', async () => {
+		const p = props({ tasks, notes: [] }, { selected: 'issue:o/r#3' });
+		const view = render(TaskList, p);
+		await page.getByRole('button', { name: 'Implement' }).click();
+		await view.rerender({ ...p, list: { tasks: tasks.slice(0, 3), notes: [] } });
+		await expect.element(page.getByTestId('task-done')).toHaveTextContent('Started.');
+		await expect.element(page.getByText('Select a task to see it here.')).not.toBeInTheDocument();
+		await view.rerender({
+			...p,
+			list: { tasks: tasks.slice(0, 3), notes: [] },
+			selected: 'pr:o/r#4'
+		});
+		await expect.element(page.getByTestId('task-done')).not.toBeInTheDocument();
+	});
+
+	it('shows an error outcome as a plain message, not a confirmation', async () => {
+		const p = props(
+			{ tasks, notes: [] },
+			{
+				selected: 'issue:o/r#3',
+				implement: vi.fn(async () => ({ ok: false, message: 'Need write access.' }))
+			}
+		);
+		render(TaskList, p);
+		await page.getByRole('button', { name: 'Implement' }).click();
+		await expect.element(page.getByText('Need write access.')).toBeVisible();
+		await expect.element(page.getByTestId('task-done')).not.toBeInTheDocument();
+	});
+
+	it('marks a cut issue body and links to the rest', async () => {
+		const cut = tasks.map((t) =>
+			t.kind === 'triaged' ? { ...t, body: 'Long text', bodyTruncated: true } : t
+		);
+		render(TaskList, props({ tasks: cut, notes: [] }, { selected: 'issue:o/r#3' }));
+		await expect.element(page.getByText('Long text…')).toBeVisible();
+		await expect.element(page.getByText(/Read the rest on/)).toBeVisible();
+		await expect
+			.element(page.getByRole('link', { name: 'r#3', exact: true }).nth(1))
+			.toHaveAttribute('href', 'https://github.com/o/r/issues/3');
+	});
+
+	it('does not mark an uncut body', async () => {
+		render(TaskList, props({ tasks, notes: [] }, { selected: 'issue:o/r#3' }));
+		await expect.element(page.getByText('It crashes on start.')).toBeVisible();
+		await expect.element(page.getByText(/Read the rest on/)).not.toBeInTheDocument();
 	});
 
 	it('Retry for a failed run, Stop for now for a waiting run', async () => {

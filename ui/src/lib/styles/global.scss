@@ -3054,6 +3054,14 @@ textarea.ez-control {
 		margin: var(--space-1, 0.25rem) 0;
 	}
 
+	&__done {
+		margin: 0 0 var(--space-2, 0.5rem);
+		padding: var(--space-2, 0.5rem) var(--space-3, 0.75rem);
+		border-left: 3px solid var(--accent, currentColor);
+		background: var(--surface-2, rgb(128 128 128 / 0.12));
+		overflow-wrap: anywhere;
+	}
+
 	&__body {
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;

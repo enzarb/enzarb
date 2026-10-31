@@ -61,6 +61,8 @@ export interface TriagedTask extends Base {
 	kind: 'triaged';
 	/** The issue text from GitHub (cached server-side). */
 	body?: string;
+	/** True when the body was cut short. */
+	bodyTruncated?: boolean;
 }
 
 export type Task = WaitTask | FailedTask | ReviewTask | TriagedTask;
@@ -87,6 +89,13 @@ export function groupTasks(tasks: Task[]): { kind: TaskKind; label: string; task
 		label: KIND_LABELS[kind],
 		tasks: tasks.filter((t) => t.kind === kind)
 	})).filter((g) => g.tasks.length > 0);
+}
+
+/** What an action button answers: the sentence to show and the run it started or stopped. */
+export interface ActionOutcome {
+	ok: boolean;
+	message: string;
+	runId?: string | null;
 }
 
 export type DefaultActionId = 'implement' | 'retry' | 'stop' | 'diff';

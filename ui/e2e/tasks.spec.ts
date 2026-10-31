@@ -63,6 +63,10 @@ test('Implement starts the workflow and the issue leaves the list', async ({ pag
 	await expect(page.getByText('The app crashes on start.')).toBeVisible();
 	await page.getByRole('button', { name: 'Implement' }).click();
 	await expect(page.getByText('Started implement-labeled-issues on #9.')).toBeVisible();
+	// The task left the list, but the detail keeps the confirmation with the new run's link.
+	const done = page.getByTestId('task-done');
+	await expect(done).toContainText('Started implement-labeled-issues on #9.');
+	await expect(done.getByRole('link', { name: /^implement-labeled-issues #/ })).toBeVisible();
 	await expect(page.getByRole('listitem', { name: /Triaged issues: Triaged bug/ })).toHaveCount(0);
 });
 
