@@ -17,6 +17,9 @@
 //! and the engine re-sends `step_start` with the same `run_id`, which resumes
 //! the step with the fresh secrets (agent: `session/load` of the saved
 //! session plus a short "continue" turn; command: the command runs again).
+//! `step_resume` never works after a restart: the engine must send `step_start`.
+//! A step whose `start.json` is gone cannot be resumed and recovers `finished`
+//! (exit `interrupted`).
 //! A step stopped by `step_stop` in the same process lifetime resumes with
 //! `step_resume` alone. A finished run whose `step_finished` carried an
 //! `environment` failure (`disk_full`, `oom`) also resumes on `step_start` with
@@ -416,18 +419,31 @@ impl StepManager {
                 g.seq = std::fs::File::open(dir.join("events.jsonl"))
                     .map(|f| std::io::BufReader::new(f).lines().count() as u64)
                     .unwrap_or(0);
-                if g.phase == StepPhase::Running {
-                    g.phase = StepPhase::Interrupted;
-                    g.finished = Some(StepFinished {
-                        run_id: id.clone(),
-                        exit: exit::INTERRUPTED.into(),
-                        outputs: Map::new(),
-                        result: None,
-                        git: vec![],
-                        usage: None,
-                        environment: None,
-                        error: Some("the sandbox restarted".into()),
-                    });
+                if matches!(g.phase, StepPhase::Running | StepPhase::Interrupted) {
+                    // Without its stored definition an interrupted step cannot be resumed
+                    // (`step_start` carries only the secrets' values): end it for good.
+                    let lost = g.stored.is_none();
+                    g.phase = if lost {
+                        StepPhase::Finished
+                    } else {
+                        StepPhase::Interrupted
+                    };
+                    if lost || g.finished.is_none() {
+                        g.finished = Some(StepFinished {
+                            run_id: id.clone(),
+                            exit: exit::INTERRUPTED.into(),
+                            outputs: Map::new(),
+                            result: None,
+                            git: vec![],
+                            usage: None,
+                            environment: None,
+                            error: Some(if lost {
+                                "the sandbox lost the step's definition".into()
+                            } else {
+                                "the sandbox restarted".into()
+                            }),
+                        });
+                    }
                     run.persist(&g);
                 }
             }

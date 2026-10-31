@@ -8,7 +8,9 @@
 //!   run checks `lease_owner`, so a replica that lost its lease cannot overwrite the new holder.
 //! * **Steps.** The `node_runs` row (with the sandbox `step_run_id`) is written before
 //!   `step_start` is sent. After a restart the driver finds the row and re-attaches with
-//!   `step_status`; it only sends `step_start` again when the sandbox does not know the step.
+//!   `step_status`; it sends `step_start` again when the sandbox does not know the step or
+//!   interrupted it (a restarted sandbox lost the secrets, so `step_resume` cannot work). A
+//!   step that makes no progress for `step_stall` fails the run.
 //! * **Actions.** The `node_runs` row with the call's `intent` is written before the GitHub call;
 //!   a row found on a resume makes the call a replay that first looks for its own effect.
 //! * **Waits.** Reaching a `wait` parks the run (`status = waiting`, no lease, `wait_node_run_id`,
@@ -47,6 +49,10 @@ pub struct ExecConfig {
     pub lease: Duration,
     /// How long a run waits before it is looked at again after a transient problem.
     pub retry_backoff: Duration,
+    /// How long a step may show no progress (no new session event, no phase change).
+    pub step_stall: Duration,
+    /// How long a step may stay `interrupted` after `step_start` was sent again.
+    pub interrupted_grace: Duration,
 }
 
 impl Default for ExecConfig {
@@ -56,6 +62,8 @@ impl Default for ExecConfig {
             poll: Duration::from_secs(2),
             lease: Duration::from_secs(30),
             retry_backoff: Duration::from_secs(15),
+            step_stall: Duration::from_secs(30 * 60),
+            interrupted_grace: Duration::from_secs(120),
         }
     }
 }
@@ -1072,20 +1080,34 @@ impl Executor {
         mut lost: watch::Receiver<bool>,
     ) -> Result<Option<StepFinished>, Stop> {
         let sid = step.run_id.clone();
+        let mut started = !resumed;
         if resumed {
             let (phase, result) = link.status(&sid).await?;
             tracing::info!(run = %run.id, step = %sid, ?phase, "re-attached to the step");
             match (phase, result) {
                 (_, Some(f)) => return Ok(Some(f)),
                 (StepPhase::Running, None) => {}
-                (StepPhase::Interrupted, None) => link.resume(&sid),
-                (StepPhase::Unknown, None) | (StepPhase::Finished, None) => {
-                    link.start(step).await?;
-                }
+                // `step_resume` needs secrets only `step_start` carries (a restarted sandbox
+                // lost them), so an interrupted step is resumed by starting it again.
+                (StepPhase::Interrupted, None)
+                | (StepPhase::Unknown, None)
+                | (StepPhase::Finished, None) => started = true,
             }
-        } else {
-            link.start(step).await?;
         }
+        if started {
+            match link.start(step).await? {
+                StepPhase::Interrupted | StepPhase::Unknown => {
+                    return Err(Stop::Retry(format!(
+                        "the sandbox did not start step {sid} (it answered not running)"
+                    )));
+                }
+                _ => {}
+            }
+        }
+        let began = std::time::Instant::now();
+        let mut last_phase = None;
+        let mut last_progress = began;
+        let mut interrupted_since: Option<std::time::Instant> = None;
         let mut stopping = false;
         let mut stop_at = None;
         loop {
@@ -1115,6 +1137,43 @@ impl Executor {
                 tracing::info!(run = %run.id, step = %sid, stopping, "stopping the step");
                 link.stop(&sid);
                 stop_at = Some(tokio::time::Instant::now() + Duration::from_secs(60));
+                continue;
+            }
+
+            // Liveness: a step that is interrupted and stays so, or shows nothing for
+            // `step_stall`, fails the run instead of holding its lease forever.
+            let now = std::time::Instant::now();
+            if let Some(at) = link.last_activity(&sid) {
+                last_progress = last_progress.max(at);
+            }
+            if let Ok((phase, None)) = link.status(&sid).await {
+                if last_phase != Some(phase) {
+                    last_phase = Some(phase);
+                    last_progress = now;
+                }
+                if phase == StepPhase::Interrupted {
+                    interrupted_since.get_or_insert(now);
+                } else {
+                    interrupted_since = None;
+                }
+            }
+            let interrupted =
+                interrupted_since.is_some_and(|s| now - s > self.cfg.interrupted_grace);
+            let stalled = now - last_progress > self.cfg.step_stall;
+            if interrupted || stalled {
+                let reason = if interrupted {
+                    format!("step {sid} stayed interrupted and the sandbox did not resume it")
+                } else if last_phase == Some(StepPhase::Interrupted) {
+                    format!("step {sid} made no progress after being interrupted")
+                } else {
+                    format!("step {sid} made no progress for {:?}", self.cfg.step_stall)
+                };
+                tracing::warn!(run = %run.id, step = %sid, waited = ?began.elapsed(), %reason, "failing a stuck step");
+                link.stop(&sid);
+                let st = self.load(&run.id).await?;
+                let state: Option<RunState> = serde_json::from_value(st.state.clone()).ok();
+                self.end_run(&st, state, EndStatus::Failed, reason).await?;
+                return Ok(None);
             }
         }
     }

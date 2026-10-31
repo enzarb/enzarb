@@ -660,6 +660,104 @@ async fn agent_step_resumes_after_a_restart() {
     .unwrap();
 }
 
+async fn status_of(s: &Session, ev: &mut Events, id: &str) -> StepPhase {
+    s.send_ctrl(&Ctrl::StepStatus {
+        run_id: id.into(),
+        after_seq: 10_000,
+    })
+    .unwrap();
+    loop {
+        if let Event::Ctrl(Ctrl::StepState { state, .. }) =
+            timeout(T, ev.next()).await.unwrap().unwrap()
+        {
+            return state;
+        }
+    }
+}
+
+/// A command step across a restart: interrupted, `step_resume` needs the secrets, and
+/// `step_start` runs it again to the end.
+#[tokio::test]
+async fn command_step_resumes_after_a_restart_with_step_start() {
+    let env = Env::new();
+    let (a, steps_a) = env.server_with_steps().await;
+    let (s, mut ev) = connect(a).await;
+    let m = env.dir.path().join("cm");
+    let exec = || StepExec::Command {
+        run: format!(
+            "if [ -e {m} ]; then echo again; else touch {m}; sleep 30; fi",
+            m = m.display()
+        ),
+        tools: vec![],
+    };
+    start(&s, &mut ev, step("cmd-r", exec(), vec![])).await;
+    while !m.exists() {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    steps_a.interrupt_all(Duration::from_secs(5)).await;
+
+    let b = env.server().await;
+    let (s2, mut ev2) = connect(b).await;
+    assert_eq!(
+        status_of(&s2, &mut ev2, "cmd-r").await,
+        StepPhase::Interrupted
+    );
+    s2.send_ctrl(&Ctrl::StepResume {
+        run_id: "cmd-r".into(),
+    })
+    .unwrap();
+    loop {
+        if let Event::Ctrl(Ctrl::Error { code, .. }) =
+            timeout(T, ev2.next()).await.unwrap().unwrap()
+        {
+            assert_eq!(code, "secrets_required");
+            break;
+        }
+    }
+    let acc = start(&s2, &mut ev2, step("cmd-r", exec(), vec![])).await;
+    assert_eq!(acc, (StepPhase::Running, true));
+    let (_, fin) = collect(&mut ev2, "cmd-r", |_| false).await;
+    assert_eq!(fin.unwrap().exit, "success");
+}
+
+/// A recovered step whose `start.json` is gone cannot be resumed: it ends, it does not hang.
+#[tokio::test]
+async fn recovered_step_without_its_definition_is_finished() {
+    let env = Env::new();
+    let (a, steps_a) = env.server_with_steps().await;
+    let (s, mut ev) = connect(a).await;
+    let m = env.dir.path().join("lost");
+    let exec = || StepExec::Command {
+        run: format!("touch {m}; sleep 30", m = m.display()),
+        tools: vec![],
+    };
+    start(&s, &mut ev, step("cmd-lost", exec(), vec![])).await;
+    while !m.exists() {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    steps_a.interrupt_all(Duration::from_secs(5)).await;
+    std::fs::remove_file(env.ws.join(".enzarb/steps/cmd-lost/start.json")).unwrap();
+
+    let b = env.server().await;
+    let (s2, mut ev2) = connect(b).await;
+    s2.send_ctrl(&Ctrl::StepStatus {
+        run_id: "cmd-lost".into(),
+        after_seq: 10_000,
+    })
+    .unwrap();
+    loop {
+        if let Event::Ctrl(Ctrl::StepState { state, result, .. }) =
+            timeout(T, ev2.next()).await.unwrap().unwrap()
+        {
+            assert_eq!(state, StepPhase::Finished);
+            let f = result.unwrap();
+            assert_eq!(f.exit, "interrupted");
+            assert!(f.error.unwrap().contains("lost the step's definition"));
+            break;
+        }
+    }
+}
+
 /// The executor sends only `step_start` (no `step_status`) and must still receive the run's
 /// `session_event`s and its `step_finished` on that session.
 #[tokio::test]
