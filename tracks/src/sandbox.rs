@@ -77,6 +77,15 @@ pub struct SessionLink {
 }
 
 impl SessionLink {
+    /// The highest session event `seq` received for `run_id` (0: none yet).
+    fn seen(&self, run_id: &str) -> u64 {
+        self.progress
+            .lock()
+            .unwrap()
+            .get(run_id)
+            .map_or(0, |(seq, _)| *seq)
+    }
+
     pub fn new(session: Session, mut events: Events) -> Self {
         let done: Arc<Mutex<HashMap<String, StepFinished>>> = Arc::default();
         let refused: Arc<Mutex<HashMap<String, String>>> = Arc::default();
@@ -149,7 +158,9 @@ impl Link for SessionLink {
     async fn status(&self, run_id: &str) -> Result<(StepPhase, Option<StepFinished>), LinkError> {
         let i: StepInfo = self
             .session
-            .step_status(run_id, 0)
+            // Only events after the highest `seq` already seen: a poll that started at 0 would
+            // replay the whole session every time it is called (the liveness check polls).
+            .step_status(run_id, self.seen(run_id))
             .await
             .map_err(transient)?;
         Ok((i.state, i.result))
