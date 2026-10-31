@@ -89,6 +89,40 @@ describe('review reads', () => {
 	});
 });
 
+describe('fresh reads and statuses', () => {
+	it('a fresh read does not join a non-fresh request in flight', async () => {
+		const { reads, f } = setup(async () => json({ total_count: 0, check_runs: [] }));
+		await Promise.all([reads.checkRuns('o/r', 's'), reads.checkRuns('o/r', 's', { fresh: true })]);
+		expect(f).toHaveBeenCalledTimes(2);
+	});
+
+	it('reads the combined commit status, none without statuses, and a note on failure', async () => {
+		const ok = setup(async () => json({ state: 'failure', total_count: 2, statuses: [] }));
+		expect((await ok.reads.commitStatus('o/r', 's')).state).toBe('failure');
+		const none = setup(async () => json({ state: 'pending', total_count: 0, statuses: [] }));
+		expect((await none.reads.commitStatus('o/r', 's')).state).toBe('none');
+		const bad = setup(async () => json({ message: 'no' }, { status: 403 }));
+		const r = await bad.reads.commitStatus('o/r', 's');
+		expect(r.state).toBeNull();
+		expect(r.note).toBeTruthy();
+	});
+
+	it('reports truncated check runs', async () => {
+		const many = setup(async () =>
+			json(
+				{ check_runs: [{ name: 'a', status: 'completed', conclusion: 'success' }] },
+				{
+					headers: {
+						'content-type': 'application/json',
+						link: '<https://api.github.com/x?page=2>; rel="next"'
+					}
+				}
+			)
+		);
+		expect((await many.reads.checkRuns('o/r', 's')).truncated).toBe(true);
+	});
+});
+
 describe('tasks GitHub reads', () => {
 	it('keeps only ez/* pull requests and caches per repository', async () => {
 		const { reads, f, advance } = setup(async () =>

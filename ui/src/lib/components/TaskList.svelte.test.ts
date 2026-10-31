@@ -190,7 +190,15 @@ describe('TaskList', () => {
 		{ filename: 'big.ts', status: 'added', additions: 5000, deletions: 0 }
 	];
 	const review = {
-		pull: null,
+		pull: {
+			number: 4,
+			title: 'Fix crash',
+			url: '',
+			draft: false,
+			headSha: 'abc1234',
+			mergeable: true,
+			mergeableState: 'clean'
+		},
 		files,
 		filesTruncated: false,
 		checks: [
@@ -237,16 +245,16 @@ describe('TaskList', () => {
 				review,
 				mergePull: vi.fn(async () => ({
 					ok: false,
-					message: 'Approved, not merged. Checks are failing: lint.',
+					message: 'Not merged. Checks are failing: lint.',
 					steps: [
 						{ id: 'access', label: 'Check your write access', result: 'done' },
-						{ id: 'approve', label: 'Approve the pull request', result: 'done' },
 						{
 							id: 'status',
 							label: 'Check mergeability and checks',
 							result: 'failed',
-							message: 'Approved, not merged. Checks are failing: lint.'
+							message: 'Not merged. Checks are failing: lint.'
 						},
+						{ id: 'approve', label: 'Approve the pull request', result: 'skipped' },
 						{ id: 'merge', label: 'Squash and merge', result: 'skipped' }
 					]
 				}))
@@ -254,7 +262,7 @@ describe('TaskList', () => {
 		);
 		render(TaskList, p);
 		await page.getByRole('button', { name: 'Approve & merge' }).click();
-		expect(p.mergePull).toHaveBeenCalledWith(tasks[2]);
+		expect(p.mergePull).toHaveBeenCalledWith(tasks[2], 'abc1234');
 		await expect
 			.element(page.getByRole('list', { name: 'Approve and merge progress' }))
 			.toBeVisible();

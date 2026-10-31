@@ -2,6 +2,8 @@ import type { ProjectView } from '#lib/project-types.ts';
 import { pendingPlan, type PendingPlan } from '#lib/plan.ts';
 import {
 	approvalBody,
+	CHANGED_MESSAGE,
+	foldStatus,
 	mergeBlock,
 	mergeTitle,
 	summarizeChecks,
@@ -186,22 +188,24 @@ export async function pullReview(
 }
 
 /**
- * Approve & merge, in this order: (1) the user's write access, live; (2) an approving review by
- * the App whose body says who approved (the App cannot act as the user; when GitHub refuses an
- * approval, e.g. on a pull request the App opened, the same sentence goes in a comment);
- * (3) live mergeability and checks; (4) squash merge by the App, titled `<title> (#n)`, guarded by
- * the head sha that was checked. Stops at the first failure and reports the steps so far.
+ * Approve & merge, in this order, stopping at the first failure: (1) the user's write access,
+ * live; (2) every cheap refusal on a fresh read, before anything is written: the head is still
+ * the one the user reviewed (`sha`), not a draft, no conflicts, mergeability known, checks and
+ * commit statuses green and fully read; (3) an approving review by the App whose body says who
+ * approved (the App cannot act as the user; only when GitHub says the App cannot approve its own
+ * pull request does the same sentence go in a comment instead); (4) a fresh re-read, then a squash
+ * merge by the App titled `<title> (#n)`, guarded by the reviewed sha.
  */
 export async function approveAndMerge(
 	deps: ReviewDeps,
 	login: string,
 	project: Project,
-	input: { repo: string; number: number }
+	input: { repo: string; number: number; sha: string }
 ): Promise<MergeOutcome> {
 	const steps: MergeStep[] = [
 		{ id: 'access', label: 'Check your write access', result: 'skipped' },
-		{ id: 'approve', label: 'Approve the pull request', result: 'skipped' },
 		{ id: 'status', label: 'Check mergeability and checks', result: 'skipped' },
+		{ id: 'approve', label: 'Approve the pull request', result: 'skipped' },
 		{ id: 'merge', label: 'Squash and merge', result: 'skipped' }
 	];
 	const stop = (i: number, message: string): MergeOutcome => {
@@ -209,37 +213,46 @@ export async function approveAndMerge(
 		steps[i]!.message = message;
 		return { ok: false, message, steps };
 	};
-	const { repo, number: n } = input;
+	const { repo, number: n, sha } = input;
+	const unreadable = "Could not read the PR's current state, so nothing was merged.";
 
 	const denied = await allowed(deps, login, project, repo);
 	if (denied) return stop(0, denied);
 	steps[0]!.result = 'done';
 
-	const { pull, note } = await deps.github.pull(repo, n, { fresh: true });
-	if (!pull) return stop(1, note ?? 'The pull request could not be read from GitHub.');
-	if (pull.draft) return stop(1, 'The pull request is still a draft.');
-	const approved = await deps.writes.approve(repo, n, approvalBody(login), pull.headSha);
-	if (approved.ok) steps[1]!.result = 'done';
-	else if (approved.status === 422) {
-		// The App opened this pull request, so it may not approve it: say so in a comment.
+	const first = await deps.github.pull(repo, n, { fresh: true });
+	if (first.note || !first.pull) return stop(1, unreadable);
+	const pull = first.pull;
+	if (pull.headSha !== sha) return stop(1, CHANGED_MESSAGE);
+	const [runs, status] = await Promise.all([
+		deps.github.checkRuns(repo, sha, { fresh: true }),
+		deps.github.commitStatus(repo, sha, { fresh: true })
+	]);
+	if (runs.note || status.note || status.state === null)
+		return stop(
+			1,
+			`Checks could not be read (${runs.note ?? status.note ?? 'unknown'}), so nothing was merged.`
+		);
+	if (runs.truncated) return stop(1, 'Too many checks to verify, so nothing was merged.');
+	const block = mergeBlock(pull, foldStatus(summarizeChecks(runs.items), status.state));
+	if (block) return stop(1, `Not merged. ${block}`);
+	steps[1]!.result = 'done';
+
+	const approved = await deps.writes.approve(repo, n, approvalBody(login), sha);
+	if (approved.ok) steps[2]!.result = 'done';
+	else if (approved.status === 422 && /own pull request/i.test(approved.message)) {
 		const c = await deps.writes.comment(repo, n, approvalBody(login));
-		if (!c.ok) return stop(1, `GitHub refused the approval: ${approved.message}`);
-		steps[1]!.result = 'done';
-		steps[1]!.message = 'Recorded as a comment: the App cannot approve its own pull request.';
-	} else return stop(1, `GitHub refused the approval: ${approved.message}`);
+		if (!c.ok) return stop(2, `GitHub refused the approval: ${approved.message}`);
+		steps[2]!.result = 'done';
+		steps[2]!.message = 'Recorded as a comment: the App cannot approve its own pull request.';
+	} else return stop(2, `GitHub refused the approval: ${approved.message}`);
 
-	const fresh = await deps.github.pull(repo, n, { fresh: true });
-	const state = fresh.pull ?? pull;
-	const checks = await deps.github.checkRuns(repo, state.headSha, { fresh: true });
-	if (checks.note)
-		return stop(2, `Checks could not be read (${checks.note}), so it was not merged.`);
-	const block = mergeBlock(state, summarizeChecks(checks.items));
-	if (block) return stop(2, `Approved, not merged. ${block}`);
-	steps[2]!.result = 'done';
-
+	const again = await deps.github.pull(repo, n, { fresh: true });
+	if (again.note || !again.pull) return stop(3, `Approved, not merged. ${unreadable}`);
+	if (again.pull.headSha !== sha) return stop(3, `Approved, not merged. ${CHANGED_MESSAGE}`);
 	const merged = await deps.writes.squashMerge(repo, n, {
-		title: mergeTitle(state.title, n),
-		sha: state.headSha
+		title: mergeTitle(again.pull.title, n),
+		sha
 	});
 	if (!merged.ok) return stop(3, `Approved, not merged. GitHub refused: ${merged.message}`);
 	steps[3]!.result = 'done';

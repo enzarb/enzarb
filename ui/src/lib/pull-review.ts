@@ -20,6 +20,8 @@ export interface PullState {
 	mergeableState: string;
 }
 
+export type CommitStatusState = 'success' | 'failure' | 'error' | 'pending' | 'none';
+
 export interface CheckSummary {
 	passed: number;
 	failed: string[];
@@ -38,6 +40,15 @@ export function summarizeChecks(runs: CheckRun[]): CheckSummary {
 	return s;
 }
 
+/** Fold the combined legacy commit status into the check summary. */
+export function foldStatus(s: CheckSummary, state: CommitStatusState): CheckSummary {
+	if (state === 'success') return { ...s, passed: s.passed + 1 };
+	if (state === 'failure' || state === 'error')
+		return { ...s, failed: [...s.failed, 'commit status'] };
+	if (state === 'pending') return { ...s, pending: [...s.pending, 'commit status'] };
+	return s;
+}
+
 /** "3 passed, 1 failed (lint), 2 pending" */
 export function checksText(s: CheckSummary): string {
 	if (s.passed + s.failed.length + s.pending.length === 0) return 'No checks ran';
@@ -52,12 +63,15 @@ export function mergeBlock(pull: PullState, checks: CheckSummary): string | null
 	if (pull.draft) return 'The pull request is still a draft.';
 	if (pull.mergeable === false || pull.mergeableState === 'dirty')
 		return 'The pull request has merge conflicts.';
-	if (checks.failed.length) return `Checks are failing: ${checks.failed.join(', ')}.`;
-	if (checks.pending.length) return `Checks are still running: ${checks.pending.join(', ')}.`;
 	if (pull.mergeable === null)
 		return 'GitHub is still working out whether it can be merged. Try again in a moment.';
+	if (checks.failed.length) return `Checks are failing: ${checks.failed.join(', ')}.`;
+	if (checks.pending.length) return `Checks are still running: ${checks.pending.join(', ')}.`;
 	return null;
 }
+
+export const CHANGED_MESSAGE =
+	'The PR changed since you looked at it; reload to review the new commits.';
 
 /** The approval review's body: it is the App's review, so it says who approved. */
 export const approvalBody = (login: string) => `Approved by @${login} in enzarb`;
@@ -84,7 +98,7 @@ export interface PullReview {
 
 export type StepResult = 'done' | 'failed' | 'skipped';
 export interface MergeStep {
-	id: 'access' | 'approve' | 'status' | 'merge';
+	id: 'access' | 'status' | 'approve' | 'merge';
 	label: string;
 	result: StepResult;
 	message?: string;

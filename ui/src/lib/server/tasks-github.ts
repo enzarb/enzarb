@@ -1,6 +1,6 @@
 import type { RepoPermissions } from './github-app.ts';
 import { githubFetch } from './github-app.ts';
-import type { CheckRun, PullState } from '#lib/pull-review.ts';
+import type { CheckRun, CommitStatusState, PullState } from '#lib/pull-review.ts';
 import type { PullFile } from '#lib/patch.ts';
 
 /**
@@ -58,7 +58,13 @@ export interface GithubReads {
 		repo: string,
 		sha: string,
 		opts?: { fresh?: boolean }
-	): Promise<{ items: CheckRun[]; note?: string }>;
+	): Promise<{ items: CheckRun[]; truncated?: boolean; note?: string }>;
+	/** Combined legacy commit status: `none` when the commit has no statuses. Needs `statuses: read`. */
+	commitStatus(
+		repo: string,
+		sha: string,
+		opts?: { fresh?: boolean }
+	): Promise<{ state: CommitStatusState | null; note?: string }>;
 	/** Bodies of the comments on an issue or pull request that carry the `ez-tracks` marker, oldest first. */
 	markedComments(repo: string, n: number): Promise<{ items: string[]; note?: string }>;
 }
@@ -118,7 +124,9 @@ export function createGithubReads({
 		const stale = (note: string) => ({ items: (hit?.value ?? []) as T[], note });
 		if (now() < blockedUntil)
 			return stale(`GitHub rate limit: ${repo} is shown from memory until it lifts`);
-		let p = inflight.get(key) as
+		// A fresh read never joins a non-fresh request in flight (which may serve cached data).
+		const flightKey = opts.fresh ? `${key}\0fresh` : key;
+		let p = inflight.get(flightKey) as
 			Promise<{ items: T[]; note?: string; truncated?: boolean }> | undefined;
 		if (!p) {
 			p = (async () => {
@@ -164,8 +172,8 @@ export function createGithubReads({
 				const truncated = url !== null;
 				cache.set(key, { at: now(), value: out, truncated });
 				return { items: out, truncated };
-			})().finally(() => inflight.delete(key));
-			inflight.set(key, p);
+			})().finally(() => inflight.delete(flightKey));
+			inflight.set(flightKey, p);
 		}
 		return p;
 	}
@@ -227,6 +235,23 @@ export function createGithubReads({
 				}),
 				{ field: 'check_runs', fresh: opts?.fresh }
 			),
+		commitStatus: async (repo, sha, opts) => {
+			const r = await list<CommitStatusState>(
+				repo,
+				{ statuses: 'read' },
+				`/repos/${enc(repo)}/commits/${encodeURIComponent(sha)}/status`,
+				(raw) => {
+					if (num(raw.total_count) === 0) return 'none';
+					const s = str(raw.state);
+					return s === 'success' || s === 'failure' || s === 'error' || s === 'pending' ? s : null;
+				},
+				{ fresh: opts?.fresh }
+			);
+			if (r.note) return { state: null, note: r.note };
+			return r.items[0]
+				? { state: r.items[0] }
+				: { state: null, note: 'The commit status was unreadable' };
+		},
 		markedComments: (repo, n) =>
 			list<string>(
 				repo,

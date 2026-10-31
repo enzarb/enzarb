@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	approvalBody,
 	checksText,
+	foldStatus,
 	mergeBlock,
 	mergeTitle,
 	summarizeChecks,
@@ -69,5 +70,16 @@ describe('wording', () => {
 	it('names who approved and keeps the PR number in the title', () => {
 		expect(approvalBody('octo')).toBe('Approved by @octo in enzarb');
 		expect(mergeTitle('Fix it', 5)).toBe('Fix it (#5)');
+	});
+});
+
+describe('foldStatus', () => {
+	it('folds the combined commit status into the summary', () => {
+		const base = summarizeChecks([check('build', 'completed', 'success')]);
+		expect(foldStatus(base, 'success').passed).toBe(2);
+		expect(foldStatus(base, 'none')).toEqual(base);
+		expect(foldStatus(base, 'failure').failed).toEqual(['commit status']);
+		expect(foldStatus(base, 'error').failed).toEqual(['commit status']);
+		expect(foldStatus(base, 'pending').pending).toEqual(['commit status']);
 	});
 });

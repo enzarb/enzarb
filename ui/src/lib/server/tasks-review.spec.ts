@@ -49,6 +49,9 @@ function deps(
 		pull: PullState | null;
 		checks: unknown[];
 		approve: unknown;
+		status: string | null;
+		truncated: boolean;
+		runsNote: string;
 	}> = {}
 ) {
 	const resumeRun = vi.fn(async () => over.resume ?? { result: 'ok' });
@@ -71,8 +74,15 @@ function deps(
 			checkRuns: vi.fn(async () => ({
 				items: (over.checks ?? [
 					{ name: 'build', status: 'completed', conclusion: 'success', url: '' }
-				]) as never[]
+				]) as never[],
+				truncated: over.truncated,
+				note: over.runsNote
 			})),
+			commitStatus: vi.fn(async () =>
+				over.status === null
+					? { state: null, note: 'statuses permission missing' }
+					: { state: (over.status ?? 'none') as never }
+			),
 			pullFiles: vi.fn(async () => ({ items: [] })),
 			markedComments: vi.fn(async () => ({ items: [] }))
 		}
@@ -226,31 +236,70 @@ describe('pullReview', () => {
 });
 
 describe('approveAndMerge', () => {
-	const input = { repo: 'o/r', number: 7 };
+	const SHA = 'sha1';
+	const input = { repo: 'o/r', number: 7, sha: SHA };
+	const noApproval = (d: ReturnType<typeof deps>) => {
+		expect(d.writes.approve).not.toHaveBeenCalled();
+		expect(d.writes.comment).not.toHaveBeenCalled();
+		expect(d.writes.squashMerge).not.toHaveBeenCalled();
+	};
 
-	it('checks access, approves naming the user, checks status, squash-merges with the title', async () => {
+	it('checks access and status, approves naming the user, then merges the reviewed sha', async () => {
 		const d = deps();
 		const r = await approveAndMerge(d, 'octo', project, input);
 		expect(r.ok).toBe(true);
-		expect(r.steps.map((s) => s.result)).toEqual(['done', 'done', 'done', 'done']);
-		expect(d.writes.approve).toHaveBeenCalledWith('o/r', 7, 'Approved by @octo in enzarb', 'sha1');
+		expect(r.steps.map((s) => [s.id, s.result])).toEqual([
+			['access', 'done'],
+			['status', 'done'],
+			['approve', 'done'],
+			['merge', 'done']
+		]);
+		expect(d.writes.approve).toHaveBeenCalledWith('o/r', 7, 'Approved by @octo in enzarb', SHA);
 		expect(d.writes.squashMerge).toHaveBeenCalledWith('o/r', 7, {
 			title: 'Fix crash (#7)',
-			sha: 'sha1'
+			sha: SHA
 		});
-		const order = [d.checkAccess, d.writes.approve, d.github.checkRuns, d.writes.squashMerge].map(
+		const order = [d.checkAccess, d.github.checkRuns, d.writes.approve, d.writes.squashMerge].map(
 			(f) => f.mock.invocationCallOrder[0]!
 		);
 		expect(order).toEqual([...order].sort((a, b) => a - b));
 	});
 
-	it('writes nothing without write access', async () => {
+	it('writes nothing without write access or for a repository outside the Project', async () => {
 		const d = deps({ allow: false });
 		const r = await approveAndMerge(d, 'octo', project, input);
-		expect(r.ok).toBe(false);
 		expect(r.steps[0]!.result).toBe('failed');
-		expect(d.writes.approve).not.toHaveBeenCalled();
+		noApproval(d);
+		const o = deps();
+		await approveAndMerge(o, 'octo', project, { ...input, repo: 'x/y' });
+		noApproval(o);
+	});
+
+	it('refuses when the head is not the one the user reviewed, before approving', async () => {
+		const d = deps({ pull: { ...pull, headSha: 'newer' } });
+		const r = await approveAndMerge(d, 'octo', project, input);
+		expect(r.message).toBe(
+			'The PR changed since you looked at it; reload to review the new commits.'
+		);
+		noApproval(d);
+	});
+
+	it('refuses when the head moves between approving and merging, without merging', async () => {
+		const d = deps();
+		d.github.pull
+			.mockResolvedValueOnce({ pull } as never)
+			.mockResolvedValueOnce({ pull: { ...pull, headSha: 'moved' } } as never);
+		const r = await approveAndMerge(d, 'octo', project, input);
+		expect(r.message).toMatch(/Approved, not merged. The PR changed/);
 		expect(d.writes.squashMerge).not.toHaveBeenCalled();
+	});
+
+	it('treats a note on the fresh pull read (stale data) as a refusal', async () => {
+		const d = deps();
+		d.github.pull.mockResolvedValue({ pull, note: 'GitHub rate limit' } as never);
+		const r = await approveAndMerge(d, 'octo', project, input);
+		expect(r.message).toMatch(/Could not read the PR's current state/);
+		noApproval(d);
 	});
 
 	it.each([
@@ -268,31 +317,40 @@ describe('approveAndMerge', () => {
 			'there are conflicts',
 			{ pull: { ...pull, mergeable: false, mergeableState: 'dirty' } },
 			/conflicts/
-		]
-	])('refuses to merge when %s, after approving', async (_n, over, reason) => {
+		],
+		['mergeability is unknown', { pull: { ...pull, mergeable: null } }, /still working out/],
+		['it is a draft', { pull: { ...pull, draft: true } }, /draft/],
+		['a commit status failed', { status: 'failure' }, /failing: commit status/],
+		['a commit status errored', { status: 'error' }, /failing: commit status/],
+		['a commit status is pending', { status: 'pending' }, /running: commit status/],
+		['check runs were cut off', { truncated: true }, /Too many checks/],
+		['check runs are unreadable', { runsNote: 'GitHub answered 403' }, /could not be read/],
+		['commit statuses are unreadable (permission)', { status: null }, /could not be read/]
+	])('refuses before approving when %s', async (_n, over, reason) => {
 		const d = deps(over as never);
 		const r = await approveAndMerge(d, 'octo', project, input);
 		expect(r.ok).toBe(false);
 		expect(r.message).toMatch(reason);
-		expect(r.steps.map((s) => s.result)).toEqual(['done', 'done', 'failed', 'skipped']);
-		expect(d.writes.squashMerge).not.toHaveBeenCalled();
+		expect(r.steps.map((s) => s.result)).toEqual(['done', 'failed', 'skipped', 'skipped']);
+		noApproval(d);
 	});
 
-	it('records the approval as a comment when the App may not approve its own pull request', async () => {
+	it('records the approval as a comment only when GitHub says the App cannot approve its own PR', async () => {
 		const d = deps({
 			approve: { ok: false, status: 422, message: 'Can not approve your own pull request' }
 		});
 		const r = await approveAndMerge(d, 'octo', project, input);
 		expect(r.ok).toBe(true);
 		expect(d.writes.comment).toHaveBeenCalledWith('o/r', 7, 'Approved by @octo in enzarb');
-		expect(r.steps[1]!.message).toMatch(/comment/);
+		expect(r.steps[2]!.message).toMatch(/comment/);
 	});
 
-	it('stops when GitHub refuses the approval or the merge', async () => {
-		const a = deps({ approve: { ok: false, status: 403, message: 'nope' } });
-		const ra = await approveAndMerge(a, 'octo', project, input);
-		expect(ra.steps[1]!.result).toBe('failed');
-		expect(a.writes.squashMerge).not.toHaveBeenCalled();
+	it('stops on any other 422 or refusal, and on a refused merge', async () => {
+		const other = deps({ approve: { ok: false, status: 422, message: 'Validation Failed' } });
+		const ro = await approveAndMerge(other, 'octo', project, input);
+		expect(ro.message).toMatch(/Validation Failed/);
+		expect(other.writes.comment).not.toHaveBeenCalled();
+		expect(other.writes.squashMerge).not.toHaveBeenCalled();
 		const m = deps();
 		m.writes.squashMerge.mockResolvedValueOnce({
 			ok: false,
@@ -302,12 +360,5 @@ describe('approveAndMerge', () => {
 		const rm = await approveAndMerge(m, 'octo', project, input);
 		expect(rm.message).toMatch(/Required reviews/);
 		expect(rm.steps[3]!.result).toBe('failed');
-	});
-
-	it('refuses a repository outside the Project before any write', async () => {
-		const d = deps();
-		const r = await approveAndMerge(d, 'octo', project, { repo: 'x/y', number: 1 });
-		expect(r.steps[0]!.result).toBe('failed');
-		expect(d.writes.approve).not.toHaveBeenCalled();
 	});
 });

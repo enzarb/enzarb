@@ -194,14 +194,19 @@ export const getPullReview = query(
 
 /** Approve & merge: access, App approval naming the user, status, squash merge. */
 export const approveAndMergePull = command(
-	v.object({ name: NameArg, repo: RepoName, number: Number_ }),
-	async ({ name, repo, number }): Promise<MergeOutcome> => {
+	v.object({
+		name: NameArg,
+		repo: RepoName,
+		number: Number_,
+		sha: v.pipe(v.string(), v.regex(/^[0-9a-f]{7,64}$/))
+	}),
+	async ({ name, repo, number, sha }): Promise<MergeOutcome> => {
 		const { user, project } = await ownedProject(name);
 		const r = await approveAndMerge(
 			{ ...actionDeps(), github: github(), writes: githubWrites() },
 			user.login,
 			project,
-			{ repo, number }
+			{ repo, number, sha }
 		);
 		await refreshAll(name);
 		for await (const e of requested(getPullReview, LIMIT)) {

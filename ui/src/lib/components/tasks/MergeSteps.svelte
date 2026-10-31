@@ -10,8 +10,8 @@
 
 	const LABELS = [
 		'Check your write access',
-		'Approve the pull request',
 		'Check mergeability and checks',
+		'Approve the pull request',
 		'Squash and merge'
 	];
 	const items = $derived<StepItem[]>(

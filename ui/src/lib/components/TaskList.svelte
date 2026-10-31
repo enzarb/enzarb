@@ -65,7 +65,7 @@
 		retryRun: (t: Task) => Promise<ActionOutcome>;
 		stop: (t: Task) => Promise<ActionOutcome>;
 		answerPlan: (t: Task, action: 'approve' | 'revise', text?: string) => Promise<ActionOutcome>;
-		mergePull: (t: Task) => Promise<MergeOutcome>;
+		mergePull: (t: Task, sha: string) => Promise<MergeOutcome>;
 	} = $props();
 
 	let busy = $state<string | null>(null);
@@ -106,7 +106,13 @@
 		done = null;
 		steps = [];
 		try {
-			const r = await mergePull(t);
+			// Merge only the head the diff and notes on screen were for.
+			const sha = review?.pull?.headSha;
+			if (!sha) {
+				message = 'The pull request is not loaded yet; wait for the diff, then try again.';
+				return;
+			}
+			const r = await mergePull(t, sha);
 			steps = r.steps;
 			if (r.ok) done = { message: r.message, workflow: '', project: t.project, runId: '' };
 			else message = r.message;

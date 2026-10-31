@@ -49,6 +49,7 @@ const github = (
 	pull: vi.fn(async () => ({ pull: null })),
 	pullFiles: vi.fn(async () => ({ items: [] })),
 	checkRuns: vi.fn(async () => ({ items: [] })),
+	commitStatus: vi.fn(async () => ({ state: 'none' as const })),
 	markedComments: vi.fn(async () => ({ items: [] }))
 });
 

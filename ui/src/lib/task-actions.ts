@@ -46,11 +46,14 @@ export function taskActions(queries: () => Refreshable[]) {
 						)
 					: { ok: false, message: 'Only waiting runs have a plan to answer.' }
 			),
-		mergePull: async (t: Task): Promise<MergeOutcome> =>
+		mergePull: async (t: Task, sha: string): Promise<MergeOutcome> =>
 			t.kind === 'review' && t.number
-				? await approveAndMergePull({ name: t.project, repo: t.repo, number: t.number }).updates(
-						...queries()
-					)
+				? await approveAndMergePull({
+						name: t.project,
+						repo: t.repo,
+						number: t.number,
+						sha
+					}).updates(...queries())
 				: { ok: false, message: 'Only pull requests can be merged.', steps: [] }
 	};
 }
