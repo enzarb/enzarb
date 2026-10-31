@@ -91,7 +91,7 @@
 				"comment": {
 					"type": "action",
 					"action": "comment",
-					"body": "{{ nodes.triage.result.summary }}\n\n---\nTo start implementing this, comment `/ez implement` (at the start of a line) or click Implement on the project's Tasks page in enzarb.",
+					"body": "{{ nodes.triage.result.summary }}\n\n---\nTo start implementing this, comment `@enzarb implement` (at the start of a line) or click Implement on the project's Tasks page in enzarb.",
 					"next": "done"
 				},
 				"done": {
@@ -104,7 +104,7 @@
 	{
 		"id": "implement-labeled-issues",
 		"title": "Implement issues on request",
-		"description": "Plan the fix, implement it and open a pull request when an issue gets the ez label, is assigned to the agent user (`ez-agent`, a placeholder: edit the `if` to your agent's login; anyone with triage access can assign, unlike the comment trigger, which needs write access), gets a /ez implement comment, or Implement is clicked in enzarb.",
+		"description": "Plan the fix, implement it and open a pull request when an issue gets the ez label, gets an `@enzarb implement` comment from someone with write access, or Implement is clicked in enzarb.",
 		"modes": [
 			{
 				"id": "planner",
@@ -133,9 +133,9 @@
 		],
 		"defaultMode": "planner",
 		"workflow": {
-			"description": "Implement issues on request (label ez, assignee, /ez implement comment or the Implement button) and open a pull request",
-			"on": ["issues.labeled", "issues.assigned", "issue_comment.created", "manual"],
-			"if": "(event.name == 'issues' and event.action == 'labeled' and event.label.name == 'ez') or (event.name == 'issues' and event.action == 'assigned' and event.assignee.login == 'ez-agent') or (event.name == 'issue_comment' and event.issue.pull_request is undefined and event.comment.user.type != 'Bot' and event.comment.author_association in ['OWNER', 'MEMBER', 'COLLABORATOR'] and event.comment.body | regex_match('(?im)^[[:space:]]*(/ez|@enzarb)[[:space:]]+implement([[:space:]]|$)')) or event.name == 'manual'",
+			"description": "Implement issues on request (label ez, @enzarb implement comment or the Implement button) and open a pull request",
+			"on": ["issues.labeled", "issue_comment.created", "manual"],
+			"if": "(event.name == 'issues' and event.action == 'labeled' and event.label.name == 'ez') or (event.name == 'issue_comment' and event.issue.pull_request is undefined and event.issue.state == 'open' and event.comment.user.type != 'Bot' and event.comment.author_association in ['OWNER', 'MEMBER', 'COLLABORATOR'] and event.comment.body | regex_match('(?im)^[[:space:]]*@enzarb[[:space:]]+implement([[:space:]]|$)')) or event.name == 'manual'",
 			"start": "plan",
 			"nodes": {
 				"plan": {
