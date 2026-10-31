@@ -264,6 +264,7 @@ fn check_duration(r: &mut Report, path: &str, value: Option<&str>) {
 struct Refs<'a> {
     engine: &'a Engine,
     nodes: &'a IndexMap<String, Node>,
+    vars: &'a IndexMap<String, serde_json::Value>,
 }
 
 impl Refs<'_> {
@@ -297,6 +298,18 @@ impl Refs<'_> {
                 }
                 continue;
             }
+            if root == "vars"
+                && let Some(name) = v.split('.').nth(1)
+                && !self.vars.contains_key(name)
+                && seen.insert(format!("vars.{name}"))
+            {
+                r.error(
+                    path,
+                    format!(
+                        "`vars.{name}`: the workflow has no var `{name}` (add it under `vars`)"
+                    ),
+                );
+            }
             if root == "nodes"
                 && let Some(node) = v.split('.').nth(1)
                 && !self.nodes.contains_key(node)
@@ -318,7 +331,23 @@ fn validate_workflow(
     let refs = Refs {
         engine,
         nodes: &wf.nodes,
+        vars: &wf.vars,
     };
+    for (k, v) in &wf.vars {
+        let vp = format!("{path}.vars.{k}");
+        let ok_name = !k.is_empty()
+            && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            && !k.as_bytes()[0].is_ascii_digit();
+        if !ok_name {
+            r.error(
+                &vp,
+                "var names use letters, digits and `_`, and don't start with a digit",
+            );
+        }
+        if !(v.is_boolean() || v.is_number() || v.is_string()) {
+            r.error(&vp, "must be a string, number or boolean");
+        }
+    }
     check_patterns(r, &format!("{path}.on"), &wf.on);
     if let Some(c) = &wf.condition {
         refs.expr(r, &format!("{path}.if"), c, TRIGGER_ROOTS);

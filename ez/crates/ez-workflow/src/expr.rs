@@ -13,7 +13,7 @@ pub const FUEL: u64 = 100_000;
 pub const MAX_RENDERED_BYTES: usize = 256 * 1024;
 
 /// Context roots every node template sees.
-pub const NODE_ROOTS: &[&str] = &["event", "subject", "nodes", "run"];
+pub const NODE_ROOTS: &[&str] = &["event", "subject", "nodes", "run", "vars"];
 /// Context roots a trigger `if` sees (no run exists yet).
 pub const TRIGGER_ROOTS: &[&str] = &["event", "subject"];
 /// MiniJinja globals that are allowed as bare names.

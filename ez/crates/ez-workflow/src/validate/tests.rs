@@ -333,3 +333,17 @@ fn result_needs_submit_result_in_mcp_tools() {
         assert_eq!(errs(&node(good, true)), "", "{good}");
     }
 }
+
+#[test]
+fn vars_parse_and_are_checked_where_referenced() {
+    let ok = "version = 1\n[workflows.w]\non = [\"issues.opened\"]\nstart = \"a\"\n[workflows.w.vars]\nflag = true\nname = \"x\"\n[workflows.w.nodes.a]\ntype = \"end\"\nstatus = \"done\"\nreason = \"{{ vars.name }}\"\n";
+    assert!(errors(ok).is_empty(), "{:?}", errors(ok));
+    let bad = ok.replace("{{ vars.name }}", "{{ vars.nope }}");
+    has_error(&bad, "workflows.w.nodes.a.reason", "no var `nope`");
+    let nested = ok.replace("name = \"x\"", "name = [1]");
+    has_error(
+        &nested,
+        "workflows.w.vars.name",
+        "string, number or boolean",
+    );
+}

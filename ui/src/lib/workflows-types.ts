@@ -28,6 +28,8 @@ export const NODE_OUTPUTS: Record<NodeType, readonly string[]> = {
 
 // ----- wire -----
 
+export type VarValue = string | number | boolean;
+
 export interface EdgeWire {
 	if?: string | null;
 	to: string;
@@ -65,6 +67,8 @@ export interface WorkflowWire {
 	start: string;
 	timeout?: string | null;
 	max_runs?: number | null;
+	/** Scalar settings, readable as `vars.<name>` in templates and conditions. */
+	vars?: Record<string, VarValue>;
 	nodes: Record<string, NodeWire>;
 }
 
@@ -124,6 +128,8 @@ export interface WorkflowDoc {
 	start: string;
 	timeout: string;
 	max_runs: number | null;
+	/** `[workflows.<id>.vars]`; carried through the designer untouched. */
+	vars?: Record<string, VarValue>;
 	nodes: NodeDoc[];
 }
 
@@ -241,6 +247,7 @@ export function fromWire(file: WorkflowsFileWire): WorkflowsDoc {
 			start: w.start,
 			timeout: w.timeout ?? '',
 			max_runs: w.max_runs ?? null,
+			...(w.vars && Object.keys(w.vars).length ? { vars: { ...w.vars } } : {}),
 			nodes: Object.entries(w.nodes).map(([nid, n]) => nodeFromWire(nid, n))
 		}))
 	};
@@ -313,6 +320,7 @@ export function toWire(doc: WorkflowsDoc): WorkflowsFileWire {
 		opt(o, 'if', w.if);
 		opt(o, 'timeout', w.timeout);
 		opt(o, 'max_runs', w.max_runs);
+		if (w.vars && Object.keys(w.vars).length) o.vars = { ...w.vars };
 		workflows[w.id] = o;
 	}
 	return { version: 1, workflows };

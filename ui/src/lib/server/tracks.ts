@@ -74,6 +74,18 @@ export interface TracksClient {
 		workflow: string;
 		actor: string;
 	}): Promise<{ id: string | null; alreadyRunning: boolean }>;
+	/**
+	 * Deliver a synthetic `manual` event (`event.action` = `action`, `event.text` = `text`,
+	 * `event.sender.login` = `actor`) to a run parked in a `wait` node (`POST /v1/runs/{id}/resume`).
+	 * `ok`: resumed. `not_waiting` (409): the run is not waiting. `not_accepted` (422): the wait's
+	 * `on`/`if` refuse this action.
+	 */
+	resumeRun(input: {
+		id: string;
+		actor: string;
+		action: string;
+		text?: string;
+	}): Promise<{ result: 'ok' | 'not_waiting' | 'not_accepted'; message?: string }>;
 	/** Triggers and traces of `text` for 1-50 logged events; no side effects. */
 	dryRun(input: {
 		text: string;
@@ -279,6 +291,21 @@ export function createTracksClient(
 				return { id: r.run.id, alreadyRunning: false };
 			} catch (e) {
 				if (e instanceof TracksError && e.status === 409) return { id: null, alreadyRunning: true };
+				throw e;
+			}
+		},
+		resumeRun: async ({ id, actor, action, text }) => {
+			try {
+				await call(`/v1/runs/${encodeURIComponent(id)}/resume`, {
+					actor,
+					action,
+					...(text ? { text } : {})
+				});
+				return { result: 'ok' };
+			} catch (e) {
+				if (e instanceof TracksError && e.status === 409) return { result: 'not_waiting' };
+				if (e instanceof TracksError && e.status === 422 && e.code === 'not_accepted')
+					return { result: 'not_accepted', message: e.message };
 				throw e;
 			}
 		},

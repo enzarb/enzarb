@@ -46,6 +46,7 @@ beforeEach(() => {
 		runs: vi.fn(async () => []),
 		run: vi.fn(async () => null),
 		stopRun: vi.fn(async () => false),
+		resumeRun: vi.fn(async () => ({ result: 'ok' as const })),
 		startRun: vi.fn(async () => ({ id: null, alreadyRunning: false })),
 		modesCatalog: vi.fn(),
 		parseModes: vi.fn(async () => ({

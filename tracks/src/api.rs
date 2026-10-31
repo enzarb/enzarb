@@ -77,6 +77,7 @@ pub fn router(state: AppState, max_body_bytes: usize) -> Router {
         )
         .route("/v1/runs/{id}", get(crate::runs_api::get))
         .route("/v1/runs/{id}/stop", post(crate::runs_api::stop))
+        .route("/v1/runs/{id}/resume", post(crate::resume::resume))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
