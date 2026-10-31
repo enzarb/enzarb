@@ -158,6 +158,7 @@ const client: TracksClient = {
 		const r = [run, ...more].find((x) => x.id === id);
 		return r ? structuredClone(r) : null;
 	},
+	resumeRun: async () => ({ result: 'ok' }),
 	stopRun: async (id) => {
 		if (id !== E2E_RUN_ID || run.status !== 'running') return false;
 		run.status = 'cancelled';

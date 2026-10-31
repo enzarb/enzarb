@@ -14,6 +14,7 @@ pub mod exec;
 pub mod github;
 pub mod manual;
 pub mod projects;
+pub mod resume;
 pub mod router;
 pub mod runs_api;
 pub mod sandbox;

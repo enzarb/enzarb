@@ -40,6 +40,15 @@ default_mode = "triage"
 [modes.triage]
 description = "Understand an issue"
 tools = ["Read"]
+
+[modes.planner]
+description = "Plan"
+tools = ["Read"]
+mcp_tools = ["mcp__enzarb__submit_result"]
+[modes.implementer]
+description = "Implement"
+tools = ["Read", "Edit"]
+mcp_tools = ["mcp__enzarb__submit_result"]
 "#;
 
 /// agent (result feeds the edge) -> command (exit feeds the edge) -> end.
@@ -576,7 +585,7 @@ async fn pending_run_with(pool: &PgPool, text: &str, event_id: i64, test: bool) 
     let event = WfEvent::new(
         "issues",
         Some("labeled".into()),
-        json!({"action": "labeled", "issue": {"number": 7, "title": "T", "user": {"login": "a"}, "html_url": "u"}, "label": {"name": "ez"}}),
+        json!({"action": "labeled", "issue": {"number": 7, "state": "open", "title": "T", "body": "B", "user": {"login": "a"}, "html_url": "u"}, "label": {"name": "ez"}}),
     );
     let id: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
         .fetch_one(pool)
@@ -1468,4 +1477,364 @@ status = "done"
     got.sort();
     assert_eq!(got, ["pending".to_string(), "running".to_string()]);
     assert_eq!(fake.started().len(), 1);
+}
+
+// ----- plan approval gate (the `implement-labeled-issues` template) -----
+
+/// The template's workflow as workflow `wf`, with `vars.approve_plan` and the approval timeout set.
+fn plan_wf(approve: bool, timeout: &str) -> &'static str {
+    let templates: Vec<Value> = serde_json::from_str(include_str!(
+        "../../ui/src/lib/rule-templates/templates.json"
+    ))
+    .unwrap();
+    let mut wf = templates
+        .iter()
+        .find(|t| t["id"] == "implement-labeled-issues")
+        .unwrap()["workflow"]
+        .clone();
+    wf["vars"]["approve_plan"] = json!(approve);
+    wf["nodes"]["approve_plan"]["timeout"] = json!(timeout);
+    let file: ez_workflow::WorkflowsFile =
+        serde_json::from_value(json!({"version": 1, "workflows": {"wf": wf}})).unwrap();
+    Box::leak(ez_workflow::to_toml(&file).unwrap().into_boxed_str())
+}
+
+/// planner: `result.plan` is "PLAN n" (n counts plan steps); implementer: pushes.
+fn plan_fake() -> Arc<Fake> {
+    let n = Mutex::new(0u32);
+    Fake::new(Box::new(move |s| {
+        let StepExec::Agent { mode, .. } = &s.exec else {
+            return None;
+        };
+        let mut f = ok("");
+        if mode.as_deref() == Some("planner") {
+            *n.lock().unwrap() += 1;
+            f.result = Some(json!({"plan": format!("PLAN {}", n.lock().unwrap())}));
+        } else {
+            f.git = vec![StepGit {
+                repo: "o/r".into(),
+                branch: "ez/wf/x".into(),
+                head_sha: "deadbeef".into(),
+                pushed: true,
+            }];
+        }
+        Some(f)
+    }))
+}
+
+/// `(mode, prompt)` of every agent step started, in order.
+fn agent_prompts(fake: &Fake) -> Vec<(String, String)> {
+    fake.started()
+        .iter()
+        .filter_map(|s| match &s.exec {
+            StepExec::Agent { mode, prompt, .. } => {
+                Some((mode.clone().unwrap_or_default(), prompt.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+struct PlanEnv {
+    env: Env,
+    gh: Arc<Gh>,
+    fake: Arc<Fake>,
+    app: axum::Router,
+    router: Arc<Router>,
+    id: String,
+    _stop: tokio::sync::watch::Sender<bool>,
+}
+
+async fn plan_env(approve: bool, timeout: &str) -> PlanEnv {
+    let env = db_setup().await;
+    let gh = fake_github().await;
+    let (_, actions) = github_actions(&gh).await;
+    let wf = plan_wf(approve, timeout);
+    let fake = plan_fake();
+    let ex = executor_with(&env, wf, &fake, Some("t"), actions);
+    let router = router_for(&env, wf);
+    let id = pending_run_with(&env.pool, wf, 100, false).await;
+    let stop = start_loop(&ex);
+    let state = api::AppState::new(vec![b'k'; 32])
+        .with_pool(env.pool.clone())
+        .with_routing(Arc::new(Source(wf)), Arc::new(Projects));
+    PlanEnv {
+        app: api::router(state, 1 << 20),
+        env,
+        gh,
+        fake,
+        router,
+        id,
+        _stop: stop,
+    }
+}
+
+impl PlanEnv {
+    async fn resume(&self, id: &str, body: Value) -> (StatusCode, Value) {
+        let res = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/runs/{id}/resume"))
+                    .header(header::AUTHORIZATION, format!("Bearer {}", "k".repeat(32)))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    async fn comment(&self, body: &str, who: &str, kind: &str, assoc: &str) -> i64 {
+        let e = event(
+            &self.env.pool,
+            "issue_comment",
+            "created",
+            json!({"action": "created",
+                "issue": {"number": 7, "state": "open", "title": "T", "body": "B", "user": {"login": "a"}, "html_url": "u"},
+                "comment": {"body": body, "user": {"login": who, "type": kind}, "author_association": assoc}}),
+        )
+        .await;
+        self.router.process(e).await;
+        e
+    }
+}
+
+#[tokio::test]
+async fn the_plan_is_posted_and_approval_through_the_resume_api_starts_implementation() {
+    let p = plan_env(true, "14d").await;
+    wait_for(&p.env.pool, &p.id, "waiting").await;
+    // The plan is a run output and a comment on the issue that says how to approve.
+    let plan = node_outputs(&p.env.pool, &p.id, "plan").await;
+    assert_eq!(plan["result"]["plan"], "PLAN 1");
+    let posts = p.gh.requests("POST", "/issues/7/comments");
+    assert_eq!(posts.len(), 1);
+    let body = posts[0].1["body"].as_str().unwrap();
+    assert!(
+        body.contains("PLAN 1") && body.contains("@enzarb approve"),
+        "{body}"
+    );
+    assert!(body.contains("@enzarb revise"), "{body}");
+    assert_eq!(agent_prompts(&p.fake).len(), 1);
+
+    let (s, v) = p
+        .resume(&p.id, json!({"actor": "carol", "action": "approve"}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["resumed"]["node"], "approve_plan");
+    let (st, reason) = wait_for(&p.env.pool, &p.id, "done").await;
+    assert_eq!((st.as_str(), reason), ("done", None));
+    let prompts = agent_prompts(&p.fake);
+    assert_eq!(prompts.len(), 2);
+    assert_eq!(prompts[1].0, "implementer");
+    assert!(prompts[1].1.contains("Implement issue #7") && prompts[1].1.contains("PLAN 1"));
+    // Who approved is recorded on the wait, and the next node saw the event.
+    let out = node_outputs(&p.env.pool, &p.id, "approve_plan").await;
+    assert_eq!(out["event"]["action"], "approve");
+    assert_eq!(out["event"]["name"], "manual");
+    assert_eq!(out["event"]["sender"]["login"], "carol");
+    let w: Value = sqlx::query_scalar(
+        "SELECT wait FROM tracks.node_runs WHERE run_id = $1::uuid AND node = 'approve_plan'",
+    )
+    .bind(&p.id)
+    .fetch_one(&p.env.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (w["resumed_by"].as_str(), w["action"].as_str()),
+        (Some("carol"), Some("approve"))
+    );
+
+    // The run is no longer waiting.
+    let (s, v) = p
+        .resume(&p.id, json!({"actor": "carol", "action": "approve"}))
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(v["error"]["code"], "not_waiting");
+    let (s, _) = p
+        .resume(
+            "00000000-0000-0000-0000-000000000000",
+            json!({"actor": "c", "action": "approve"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn revise_loops_back_to_plan_with_the_feedback() {
+    let p = plan_env(true, "14d").await;
+    wait_for(&p.env.pool, &p.id, "waiting").await;
+    let (s, _) = p
+        .resume(
+            &p.id,
+            json!({"actor": "carol", "action": "revise", "text": "use fewer files"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    // Parks again, after planning a second time and posting the new plan.
+    for _ in 0..200 {
+        if p.gh.requests("POST", "/issues/7/comments").len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    wait_for(&p.env.pool, &p.id, "waiting").await;
+    let prompts = agent_prompts(&p.fake);
+    assert_eq!(prompts.len(), 2);
+    assert!(
+        !prompts[0].1.contains("Revise the plan"),
+        "{}",
+        prompts[0].1
+    );
+    assert_eq!(prompts[1].0, "planner");
+    assert!(prompts[1].1.contains("PLAN 1"), "{}", prompts[1].1);
+    assert!(
+        prompts[1]
+            .1
+            .contains("Revise the plan using this feedback:")
+            && prompts[1].1.contains("use fewer files"),
+        "{}",
+        prompts[1].1
+    );
+    assert!(prompts[1].1.contains("Issue #7: T"), "{}", prompts[1].1);
+    let posts = p.gh.requests("POST", "/issues/7/comments");
+    assert!(posts[1].1["body"].as_str().unwrap().contains("PLAN 2"));
+
+    let (s, _) = p
+        .resume(&p.id, json!({"actor": "carol", "action": "approve"}))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    wait_for(&p.env.pool, &p.id, "done").await;
+    let impl_prompt = &agent_prompts(&p.fake)[2];
+    assert_eq!(impl_prompt.0, "implementer");
+    assert!(impl_prompt.1.contains("PLAN 2"));
+}
+
+#[tokio::test]
+async fn a_writers_comment_approves_but_bots_and_outsiders_do_not() {
+    let p = plan_env(true, "14d").await;
+    wait_for(&p.env.pool, &p.id, "waiting").await;
+    for (body, who, kind, assoc) in [
+        ("@enzarb approve", "mallory", "User", "NONE"),
+        ("@enzarb approve", "enzarb[bot]", "Bot", "MEMBER"),
+        ("@enzarb approve", "mallory", "User", "CONTRIBUTOR"),
+        ("looks good", "carol", "User", "OWNER"),
+    ] {
+        let e = p.comment(body, who, kind, assoc).await;
+        let errs: Value =
+            sqlx::query_scalar("SELECT errors FROM tracks.event_decisions WHERE event_id = $1")
+                .bind(e)
+                .fetch_one(&p.env.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            decision_of(&p.env.pool, e).await.0,
+            "no_match",
+            "{who} {errs}"
+        );
+    }
+    assert_eq!(status(&p.env.pool, &p.id).await.0, "waiting");
+    // A comment on another issue never resumes it.
+    let other = event(
+        &p.env.pool,
+        "issue_comment",
+        "created",
+        json!({"action": "created", "issue": {"number": 8, "state": "open", "title": "T", "body": "B", "user": {"login": "a"}, "html_url": "u"},
+            "comment": {"body": "@enzarb approve", "user": {"login": "carol", "type": "User"}, "author_association": "OWNER"}}),
+    )
+    .await;
+    p.router.process(other).await;
+    assert_eq!(decision_of(&p.env.pool, other).await.0, "no_match");
+
+    let e = p
+        .comment("@enzarb approve", "carol", "User", "COLLABORATOR")
+        .await;
+    assert_eq!(decision_of(&p.env.pool, e).await.0, "resumed");
+    wait_for(&p.env.pool, &p.id, "done").await;
+    let prompts = agent_prompts(&p.fake);
+    assert_eq!(prompts[1].0, "implementer");
+    assert!(prompts[1].1.contains("Implement issue #7"));
+}
+
+#[tokio::test]
+async fn a_comment_revise_loops_back_with_the_comment_as_feedback() {
+    let p = plan_env(true, "14d").await;
+    wait_for(&p.env.pool, &p.id, "waiting").await;
+    let e = p
+        .comment(
+            "@enzarb revise split the migration",
+            "carol",
+            "User",
+            "OWNER",
+        )
+        .await;
+    assert_eq!(decision_of(&p.env.pool, e).await.0, "resumed");
+    for _ in 0..200 {
+        if agent_prompts(&p.fake).len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let prompts = agent_prompts(&p.fake);
+    assert_eq!(prompts[1].0, "planner");
+    assert!(
+        prompts[1].1.contains("split the migration"),
+        "{}",
+        prompts[1].1
+    );
+}
+
+#[tokio::test]
+async fn the_wait_decides_which_actions_resume_it() {
+    let p = plan_env(true, "14d").await;
+    wait_for(&p.env.pool, &p.id, "waiting").await;
+    let (s, v) = p
+        .resume(&p.id, json!({"actor": "carol", "action": "dance"}))
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(v["error"]["code"], "not_accepted");
+    assert_eq!(status(&p.env.pool, &p.id).await.0, "waiting");
+    let (s, _) = p
+        .resume(&p.id, json!({"actor": "", "action": "approve"}))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn without_approve_plan_implementation_starts_right_after_the_plan() {
+    let p = plan_env(false, "14d").await;
+    let (st, reason) = wait_for(&p.env.pool, &p.id, "done").await;
+    assert_eq!((st.as_str(), reason), ("done", None));
+    let prompts = agent_prompts(&p.fake);
+    assert_eq!(
+        prompts.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(),
+        ["planner", "implementer"]
+    );
+    // No plan comment, no wait.
+    assert!(p.gh.requests("POST", "/issues/7/comments").is_empty());
+    let (s, v) = p
+        .resume(&p.id, json!({"actor": "carol", "action": "approve"}))
+        .await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (StatusCode::CONFLICT, Some("not_waiting"))
+    );
+}
+
+#[tokio::test]
+async fn an_unapproved_plan_times_out() {
+    let p = plan_env(true, "1s").await;
+    let (_, reason) = wait_for(&p.env.pool, &p.id, "cancelled").await;
+    assert_eq!(reason.as_deref(), Some("plan not approved in time"));
+    assert_eq!(agent_prompts(&p.fake).len(), 1);
+    let out = node_outputs(&p.env.pool, &p.id, "approve_plan").await;
+    assert_eq!(out["timed_out"], true);
 }

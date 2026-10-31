@@ -53,6 +53,9 @@ pub struct Workflow {
     /// Live runs of this workflow at once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_runs: Option<u32>,
+    /// Per-workflow settings (scalars), readable as `vars.<name>` in templates and conditions.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub vars: IndexMap<String, serde_json::Value>,
     /// In file order.
     pub nodes: IndexMap<String, Node>,
 }

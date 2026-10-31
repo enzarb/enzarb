@@ -713,7 +713,12 @@ impl Executor {
         if let (Some(res), Some(nid)) = (&run.wait_result, existing) {
             let outputs = res.get("outputs").cloned().unwrap_or(Value::Null);
             let timed_out = outputs.get("timed_out").and_then(Value::as_bool) == Some(true);
-            let wait = json!({ "resumed_by_event": res.get("event_id"), "timed_out": timed_out });
+            let wait = json!({
+                "resumed_by_event": res.get("event_id"),
+                "resumed_by": res.get("resumed_by"),
+                "action": res.get("action"),
+                "timed_out": timed_out,
+            });
             let mut next = state.clone();
             if let Err(e) = next.advance(&self.engine, &pin.file, outputs.clone()) {
                 let why = e.to_string();

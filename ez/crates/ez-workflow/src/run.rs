@@ -52,6 +52,9 @@ pub struct RunState {
     pub subject: Option<Subject>,
     /// Latest outputs per node id (the `nodes` variable).
     pub nodes: Map<String, Value>,
+    /// The workflow's `vars` as of the run's start (the `vars` variable).
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub vars: Map<String, Value>,
     pub visits: BTreeMap<String, u32>,
     /// The node the last edge was taken from (for the generic end reason).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -180,6 +183,11 @@ impl RunState {
             event: event.context(),
             subject: event.subject(),
             nodes: Map::new(),
+            vars: wf
+                .vars
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
             visits: BTreeMap::new(),
             previous: None,
             status: RunStatus::At {
@@ -202,13 +210,14 @@ impl RunState {
         matches!(self.status, RunStatus::Ended { .. })
     }
 
-    /// The template context: `event`, `subject`, `nodes`, `run`.
+    /// The template context: `event`, `subject`, `nodes`, `run`, `vars`.
     pub fn context(&self) -> Value {
         json!({
             "event": self.event,
             "subject": self.subject,
             "nodes": self.nodes,
             "run": self.run,
+            "vars": self.vars,
         })
     }
 

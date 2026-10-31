@@ -48,6 +48,17 @@ describe('wire conversion', () => {
 		expect(toWire(doc)).toEqual(wire);
 	});
 
+	it('keeps workflow vars through the designer', () => {
+		const withVars: WorkflowsFileWire = {
+			version: 1,
+			workflows: { fix: { ...wire.workflows!.fix, vars: { approve_plan: true, label: 'x', n: 2 } } }
+		};
+		const doc = fromWire(withVars);
+		expect(doc.workflows[0].vars).toEqual({ approve_plan: true, label: 'x', n: 2 });
+		expect(toWire(doc)).toEqual(withVars);
+		expect(toWire(fromWire(wire)).workflows!.fix).not.toHaveProperty('vars');
+	});
+
 	it('writes no nulls for lists and booleans serde would reject', () => {
 		const wf = blankWorkflow('w');
 		wf.nodes[0] = { ...blankNode('start', 'action'), next: [{ if: '', to: 'done' }] };
