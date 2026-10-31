@@ -67,7 +67,7 @@ status = "done"
 [workflows.implement-labeled-issues]
 description = "Implement issues labelled ez and open a pull request"
 on = ["issues.labeled", "issue_comment.created", "manual"]
-if = "(event.name == 'issues' and event.action == 'labeled' and event.label.name == 'ez') or (event.name == 'issue_comment' and event.issue.state == 'open' and event.issue.pull_request is undefined and event.comment.user.type != 'Bot' and event.comment.author_association in ['OWNER', 'MEMBER', 'COLLABORATOR'] and event.comment.body | regex_match('(?im)^[[:space:]]*(/ez|@enzarb)[[:space:]]+implement([[:space:]]|$)')) or event.name == 'manual'"
+if = "(event.name == 'issues' and event.action == 'labeled' and event.label.name == 'ez') or (event.name == 'issue_comment' and event.issue.state == 'open' and event.issue.pull_request is undefined and event.comment.user.type != 'Bot' and event.comment.author_association in ['OWNER', 'MEMBER', 'COLLABORATOR'] and event.comment.body | regex_match('(?im)^[[:space:]]*@enzarb[[:space:]]+implement([[:space:]]|$)')) or event.name == 'manual'"
 start = "plan"
 
 [workflows.implement-labeled-issues.nodes.plan]
