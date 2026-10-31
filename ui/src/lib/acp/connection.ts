@@ -164,6 +164,11 @@ const OPEN_FAILURES: Record<string, Failure> = {
 		message: 'The repository is not cloned in the sandbox yet',
 		action: 'retry'
 	},
+	[OpenErrorCode.CheckoutUnavailable]: {
+		message:
+			"This task's branch is not in the sandbox yet. It appears once a run has created or pushed it.",
+		action: null
+	},
 	[OpenErrorCode.UnsupportedKind]: { message: 'This sandbox does not support chat', action: null },
 	[OpenErrorCode.InvalidRequest]: { message: 'The chat request was invalid', action: null }
 };

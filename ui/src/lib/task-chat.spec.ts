@@ -78,7 +78,7 @@ describe('taskCheckout', () => {
 		});
 	});
 	it('starts a new branch for a triaged issue', () => {
-		expect(taskCheckout(triaged)).toEqual({ branch: 'enzarb/issue-12' });
+		expect(taskCheckout(triaged)).toEqual({ branch: 'enzarb/issue-12', create: true });
 	});
 });
 

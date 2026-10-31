@@ -9,11 +9,17 @@ export type ChatCheckout = {
  */
 branch: string, 
 /**
- * Where to create `branch` from when the sandbox has no such branch (`refs/heads/<name>`; a
- * `refs/pull/<n>/head` is accepted but only resolves when the sandbox already has it).
- * Omitted: the default branch.
+ * Where `branch` comes from when the sandbox has no saved commit, run checkout or `origin/<branch>`
+ * for it: `refs/heads/<name>` (resolved as `origin/<name>`) or `refs/pull/<n>/head` (only when the
+ * sandbox already has that ref; the chat has no network git).
  */
-start_ref?: string | null, };
+start_ref?: string | null, 
+/**
+ * `true`: `branch` is new and may start from `start_ref`, else the default branch. Otherwise the
+ * branch is expected to exist (a run branch, a pull request head) and the open fails with
+ * `open_error` `checkout_unavailable` when the sandbox cannot resolve it. Omitted: `false`.
+ */
+create?: boolean | null, };
 
 export type ClientKind = "ui" | "proxy" | "executor";
 

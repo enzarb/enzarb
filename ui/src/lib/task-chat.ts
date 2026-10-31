@@ -27,7 +27,7 @@ export function taskCheckout(task: Task, run?: RunDetail | null): ChatCheckout {
 		case 'review':
 			return { branch: task.branch, start_ref: `refs/heads/${task.branch}` };
 		case 'triaged':
-			return { branch: issueBranch(task.number) };
+			return { branch: issueBranch(task.number), create: true };
 	}
 }
 

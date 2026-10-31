@@ -87,6 +87,8 @@ pub mod open_error_code {
     pub const CHAT_LIMIT: &str = "chat_limit";
     pub const NO_CREDENTIAL: &str = "no_credential";
     pub const REPO_NOT_CLONED: &str = "repo_not_cloned";
+    /// `open.checkout` names a branch the sandbox does not have and `create` is not set.
+    pub const CHECKOUT_UNAVAILABLE: &str = "checkout_unavailable";
     /// The `open.kind` is not one this peer implements.
     pub const UNSUPPORTED_KIND: &str = "unsupported_kind";
     /// `open.repo`/`open.resume` exceeds [`MAX_REPO_LEN`]/[`MAX_RESUME_LEN`].
@@ -101,11 +103,16 @@ pub const MAX_REPO_LEN: usize = 2048;
 pub struct ChatCheckout {
     /// Branch name (at most 200 bytes of `[A-Za-z0-9._/-]`, no `..`, not starting with `-`, `/` or `.`).
     pub branch: String,
-    /// Where to create `branch` from when the sandbox has no such branch (`refs/heads/<name>`; a
-    /// `refs/pull/<n>/head` is accepted but only resolves when the sandbox already has it).
-    /// Omitted: the default branch.
+    /// Where `branch` comes from when the sandbox has no saved commit, run checkout or `origin/<branch>`
+    /// for it: `refs/heads/<name>` (resolved as `origin/<name>`) or `refs/pull/<n>/head` (only when the
+    /// sandbox already has that ref; the chat has no network git).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_ref: Option<String>,
+    /// `true`: `branch` is new and may start from `start_ref`, else the default branch. Otherwise the
+    /// branch is expected to exist (a run branch, a pull request head) and the open fails with
+    /// `open_error` `checkout_unavailable` when the sandbox cannot resolve it. Omitted: `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create: Option<bool>,
 }
 
 /// Longest `open.resume` (bytes) senders may send and receivers must accept.

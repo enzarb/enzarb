@@ -210,14 +210,22 @@ pub fn valid_checkout(c: &ChatCheckout) -> bool {
     valid_branch(&c.branch) && c.start_ref.as_deref().is_none_or(valid_start_ref)
 }
 
+/// Why a chat worktree could not be created.
+enum WtError {
+    /// `open.checkout` names a branch the sandbox does not have (and `create` is not set).
+    Unavailable(String),
+    Other(String),
+}
+
+impl From<String> for WtError {
+    fn from(e: String) -> Self {
+        WtError::Other(e)
+    }
+}
+
 /// `open.resume`: an ACP session id (see [`filter::valid_session_id`]).
 pub fn valid_resume(s: &str) -> bool {
     s.len() <= MAX_RESUME_LEN && filter::valid_session_id(s)
-}
-
-/// `repo_dir_name` without its trailing `-<hash of the URL>`: `<owner>-<repo>`.
-fn dir_tail(name: &str) -> &str {
-    name.len().checked_sub(9).map_or(name, |n| &name[..n])
 }
 
 /// What [`ChatManager::init_chat_repo`] builds the chat repo from.
@@ -853,18 +861,23 @@ impl ChatManager {
     /// that points into the clone jobs fetch and push from, so its config,
     /// hooks and refs are its own.
     ///
-    /// With `checkout`, the worktree is on `checkout.branch` instead: from the
-    /// chat's saved commit (resume), else from a run checkout of the branch
-    /// under `<ws>/tasks/*/<owner>/<repo>` (an unpushed run branch), else
-    /// `origin/<branch>`, else `checkout.start_ref`, else the default branch.
+    /// With `checkout`, the worktree is on `checkout.branch` instead, from the
+    /// chat's saved commit (resume), else from the run checkout of the branch
+    /// with the newest commit under `<ws>/tasks/*/<owner>/<repo>` whose origin
+    /// is this clone's repository (an unpushed run branch), else
+    /// `origin/<branch>`, else `checkout.start_ref` (`refs/heads/<b>` as
+    /// `origin/<b>`, `refs/pull/<n>/head` when the clone has that ref). Only a
+    /// `create` checkout may then start from the default branch; any other
+    /// fails with [`WtError::Unavailable`], never a chat on the wrong code.
+    /// Resume restores the last saved commit (the chat's HEAD at its end, even
+    /// when detached) onto `checkout.branch`, not the HEAD's own state.
     /// Its commits are saved back as `enzarb/chat-<id>` like any chat's.
     async fn create_worktree(
         &self,
         clone: &Path,
         chat_id: &str,
-        repo: Option<&str>,
         checkout: Option<&ChatCheckout>,
-    ) -> Result<PathBuf, String> {
+    ) -> Result<PathBuf, WtError> {
         let wt = self.worktrees_dir().join(format!("chat-{chat_id}"));
         let own_branch = format!("enzarb/chat-{chat_id}");
         let branch = checkout.map_or(own_branch.clone(), |c| c.branch.clone());
@@ -880,20 +893,26 @@ impl ChatManager {
         if let Some(c) = checkout
             && start.is_none()
         {
-            if let Some(dir) = self.find_task_checkout(repo, clone, &c.branch).await {
+            if let Some(dir) = self.find_task_checkout(clone, &c.branch).await {
                 task_src = Some(dir);
             } else {
                 start = self
                     .rev(clone, &format!("refs/remotes/origin/{}", c.branch))
                     .await;
                 if start.is_none()
-                    && let Some(b) = c
-                        .start_ref
-                        .as_deref()
-                        .and_then(|r| r.strip_prefix("refs/heads/"))
+                    && let Some(r) = c.start_ref.as_deref()
                 {
-                    start = self.rev(clone, &format!("refs/remotes/origin/{b}")).await;
+                    start = match r.strip_prefix("refs/heads/") {
+                        Some(b) => self.rev(clone, &format!("refs/remotes/origin/{b}")).await,
+                        None => self.rev(clone, r).await,
+                    };
                 }
+            }
+            if start.is_none() && task_src.is_none() && c.create != Some(true) {
+                return Err(WtError::Unavailable(format!(
+                    "branch {} is not in the sandbox",
+                    c.branch
+                )));
             }
         }
         for r in [
@@ -910,7 +929,7 @@ impl ChatManager {
         let start = match (start, &task_src) {
             (Some(s), _) => s,
             (None, Some(_)) => String::new(),
-            (None, None) => return Err("the clone has no commit to start from".into()),
+            (None, None) => return Err("the clone has no commit to start from".to_string().into()),
         };
         let res = self
             .init_chat_repo(
@@ -930,62 +949,71 @@ impl ChatManager {
         if res.is_err() {
             let _ = std::fs::remove_dir_all(&wt);
         }
-        res.map(|_| wt)
+        res.map(|_| wt).map_err(WtError::Other)
     }
 
-    /// The newest run checkout (`<ws>/tasks/<task>/<owner>/<repo>`) of the chat's
-    /// repo that has a local branch `branch`, where an unpushed run branch lives.
-    async fn find_task_checkout(
-        &self,
-        repo: Option<&str>,
-        clone: &Path,
-        branch: &str,
-    ) -> Option<PathBuf> {
-        let want = repo
-            .map(repo_dir_name)
-            .or_else(|| clone.file_name().map(|n| n.to_string_lossy().into_owned()))?;
-        let mut found: Vec<(SystemTime, PathBuf)> = Vec::new();
-        for task in std::fs::read_dir(self.cfg.workspace.join("tasks"))
-            .ok()?
-            .flatten()
-        {
-            for owner in std::fs::read_dir(task.path())
+    /// The run checkout (`<ws>/tasks/<task>/<owner>/<repo>`) of this clone's
+    /// repository with a local branch `branch`: where an unpushed run branch
+    /// lives. A checkout counts when its `origin` URL hashes to the clone's
+    /// directory name (the same `repo_dir_name` the clone path uses), so a
+    /// look-alike repository never matches. The newest commit on `branch` wins.
+    async fn find_task_checkout(&self, clone: &Path, branch: &str) -> Option<PathBuf> {
+        let want = clone.file_name()?.to_string_lossy().into_owned();
+        let mut best: Option<(u64, PathBuf)> = None;
+        let level = |p: &Path| -> Vec<PathBuf> {
+            std::fs::read_dir(p)
                 .into_iter()
                 .flatten()
                 .flatten()
-            {
-                for r in std::fs::read_dir(owner.path())
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                {
-                    let name = format!(
-                        "{}/{}",
-                        owner.file_name().to_string_lossy(),
-                        r.file_name().to_string_lossy()
-                    );
-                    let p = r.path();
-                    if dir_tail(&repo_dir_name(&name)) == dir_tail(&want) && p.join(".git").is_dir()
+                .map(|e| e.path())
+                .collect()
+        };
+        for task in level(&self.cfg.workspace.join("tasks")) {
+            for owner in level(&task) {
+                for dir in level(&owner) {
+                    if !dir.join(".git").is_dir() {
+                        continue;
+                    }
+                    let url = match self
+                        .git(&dir, &["config", "--get", "remote.origin.url"])
+                        .await
                     {
-                        let m = std::fs::metadata(&p)
-                            .and_then(|m| m.modified())
-                            .unwrap_or(UNIX_EPOCH);
-                        found.push((m, p));
+                        Ok(o) if o.success() => {
+                            String::from_utf8_lossy(&o.stdout).trim().to_string()
+                        }
+                        _ => continue,
+                    };
+                    if repo_dir_name(&url) != want {
+                        continue;
+                    }
+                    let Ok(o) = self
+                        .git(
+                            &dir,
+                            &["log", "-1", "--format=%ct", &format!("refs/heads/{branch}")],
+                        )
+                        .await
+                    else {
+                        continue;
+                    };
+                    let Some(ct) = o
+                        .success()
+                        .then(|| {
+                            String::from_utf8_lossy(&o.stdout)
+                                .trim()
+                                .parse::<u64>()
+                                .ok()
+                        })
+                        .flatten()
+                    else {
+                        continue;
+                    };
+                    if best.as_ref().is_none_or(|(b, _)| ct > *b) {
+                        best = Some((ct, dir));
                     }
                 }
             }
         }
-        found.sort_by_key(|f| std::cmp::Reverse(f.0));
-        for (_, p) in found {
-            if self
-                .rev(&p, &format!("refs/heads/{branch}"))
-                .await
-                .is_some()
-            {
-                return Some(p);
-            }
-        }
-        None
+        best.map(|(_, d)| d)
     }
 
     async fn init_chat_repo(&self, clone: &Path, wt: &Path, i: &Init<'_>) -> Result<(), String> {
@@ -1088,6 +1116,11 @@ impl ChatManager {
         }
         if !clone.join(".git").is_dir() {
             return false;
+        }
+        // Only a commit is saved: an unborn HEAD has nothing to lose. A detached
+        // or switched HEAD is saved like a branch (resume restores its commit).
+        if self.rev(wt, "HEAD").await.is_none() {
+            return true;
         }
         let branch = format!("refs/heads/enzarb/chat-{id}");
         let w = wt.to_string_lossy().into_owned();
@@ -1222,11 +1255,14 @@ impl ChatManager {
             return req.reject("the chat was closed while starting");
         }
         let wt = match self
-            .create_worktree(&clone, &chat_id, req.repo.as_deref(), req.checkout.as_ref())
+            .create_worktree(&clone, &chat_id, req.checkout.as_ref())
             .await
         {
             Ok(w) => w,
-            Err(e) => {
+            Err(WtError::Unavailable(m)) => {
+                return req.reject_with_code(open_error_code::CHECKOUT_UNAVAILABLE, &m);
+            }
+            Err(WtError::Other(e)) => {
                 tracing::warn!(chat = %chat_id, error = %e, "cannot create chat worktree");
                 return req.reject("cannot create the chat worktree");
             }

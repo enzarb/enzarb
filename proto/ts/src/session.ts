@@ -300,7 +300,7 @@ export class Session implements ChannelHost {
    * `ndJsonStream(byteChannel.writable, byteChannel.readable)` from `@agentclientprotocol/sdk`.
    */
   async openAcp(
-    opts: { repo?: string; resume?: string; claudeToken?: SecretLike; checkout?: { branch: string; start_ref?: string } } = {},
+    opts: { repo?: string; resume?: string; claudeToken?: SecretLike; checkout?: { branch: string; start_ref?: string; create?: boolean } } = {},
   ): Promise<ByteChannel> {
     this.alive();
     const enc = new TextEncoder();

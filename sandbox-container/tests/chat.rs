@@ -1148,6 +1148,7 @@ fn checkout(branch: &str, start_ref: Option<&str>) -> Option<ChatCheckout> {
     Some(ChatCheckout {
         branch: branch.into(),
         start_ref: start_ref.map(String::from),
+        create: None,
     })
 }
 
@@ -1207,7 +1208,7 @@ async fn chat_opens_on_a_pull_request_head_branch() {
 async fn chat_creates_a_new_branch_from_the_default_branch() {
     let s = start().await;
     let (session, _ev) = s.connect().await;
-    let mut acp = open_on(&s, &session, checkout("enzarb/issue-4", None)).await;
+    let mut acp = open_on(&s, &session, new_branch("enzarb/issue-4")).await;
     acp.start_session().await;
     let wt = s.chat_worktrees()[0].clone();
     assert_eq!(head(&wt), "enzarb/issue-4");
@@ -1258,4 +1259,195 @@ async fn chat_rejects_an_invalid_checkout() {
             "{co:?}"
         );
     }
+}
+
+/// A branch that does not exist yet (an issue task): may start from the default branch.
+fn new_branch(branch: &str) -> Option<ChatCheckout> {
+    Some(ChatCheckout {
+        branch: branch.into(),
+        start_ref: None,
+        create: Some(true),
+    })
+}
+
+async fn open_err(s: &Server, session: &Session, co: Option<ChatCheckout>) -> (String, String) {
+    let e = timeout(
+        T,
+        session.open_acp_checkout(Some(s.repo_url.clone()), None, None, co),
+    )
+    .await
+    .unwrap()
+    .err()
+    .expect("the open must fail");
+    (
+        e.open_error_code().unwrap_or_default().to_string(),
+        e.to_string(),
+    )
+}
+
+#[tokio::test]
+async fn chat_on_a_missing_existing_branch_is_refused_not_started_on_main() {
+    let s = start().await;
+    let (session, _ev) = s.connect().await;
+    // a run branch that the sandbox has neither pushed nor checked out
+    let (code, msg) = open_err(&s, &session, checkout("ez/triage/gone", None)).await;
+    assert_eq!(code, open_error_code::CHECKOUT_UNAVAILABLE);
+    assert!(
+        msg.contains("branch ez/triage/gone is not in the sandbox"),
+        "{msg}"
+    );
+    // a start ref that the clone does not have resolves nothing either
+    let (code, _) = open_err(
+        &s,
+        &session,
+        checkout("ez/triage/gone", Some("refs/heads/ez/triage/gone")),
+    )
+    .await;
+    assert_eq!(code, open_error_code::CHECKOUT_UNAVAILABLE);
+    let (code, _) = open_err(&s, &session, checkout("pr", Some("refs/pull/9/head"))).await;
+    assert_eq!(code, open_error_code::CHECKOUT_UNAVAILABLE);
+    assert!(s.chat_worktrees().is_empty(), "no worktree is left behind");
+}
+
+#[tokio::test]
+async fn chat_resolves_a_pull_ref_the_clone_has() {
+    let s = start().await;
+    push_origin_branch(&s, "feature/from-fork", "fork.txt");
+    let clone = s.clone_dir();
+    let sha = git_out(
+        &clone,
+        &["rev-parse", "refs/remotes/origin/feature/from-fork"],
+    )
+    .1;
+    git(&clone, &["update-ref", "refs/pull/9/head", &sha]);
+    git(
+        &clone,
+        &["update-ref", "-d", "refs/remotes/origin/feature/from-fork"],
+    );
+    let (session, _ev) = s.connect().await;
+    let mut acp = open_on(&s, &session, checkout("pr-9", Some("refs/pull/9/head"))).await;
+    acp.start_session().await;
+    let wt = s.chat_worktrees()[0].clone();
+    assert_eq!(head(&wt), "pr-9");
+    assert!(wt.join("fork.txt").exists());
+}
+
+fn dated_commit(dir: &Path, msg: &str, date: &str) {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .env("GIT_COMMITTER_DATE", date)
+        .env("GIT_AUTHOR_DATE", date)
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            msg,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[tokio::test]
+async fn run_checkout_is_matched_by_repository_and_newest_commit() {
+    let s = start().await;
+    let owner = s.ws.parent().unwrap().file_name().unwrap().to_owned();
+    let mk = |task: &str, repo_url: &str, file: &str, date: &str| {
+        let run = s.ws.join("tasks").join(task).join(&owner).join("origin");
+        std::fs::create_dir_all(run.parent().unwrap()).unwrap();
+        git(&s.ws, &["clone", "-q", repo_url, run.to_str().unwrap()]);
+        git(&run, &["checkout", "-q", "-b", "ez/wf/r1"]);
+        std::fs::write(run.join(file), "x\n").unwrap();
+        git(&run, &["add", file]);
+        dated_commit(&run, file, date);
+    };
+    // The task with the newest commit is created first, so its directory is older.
+    mk(
+        "t-new-commit",
+        &s.repo_url,
+        "newest.txt",
+        "2030-01-01T00:00:00Z",
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    mk(
+        "t-old-commit",
+        &s.repo_url,
+        "older.txt",
+        "2020-01-01T00:00:00Z",
+    );
+    // A look-alike (same `<owner>/<repo>` directory, another origin) never matches.
+    let other = s.ws.parent().unwrap().join("other");
+    std::fs::create_dir(&other).unwrap();
+    git(&other, &["init", "-q", "-b", "main"]);
+    std::fs::write(other.join("f"), "x").unwrap();
+    git(&other, &["add", "f"]);
+    git(&other, &["commit", "-qm", "init"]);
+    mk(
+        "t-lookalike",
+        &format!("file://{}", other.display()),
+        "evil.txt",
+        "2040-01-01T00:00:00Z",
+    );
+    let (session, _ev) = s.connect().await;
+    let mut acp = open_on(&s, &session, checkout("ez/wf/r1", None)).await;
+    acp.start_session().await;
+    let wt = s.chat_worktrees()[0].clone();
+    assert!(wt.join("newest.txt").exists(), "the newest commit wins");
+    assert!(!wt.join("older.txt").exists());
+    assert!(
+        !wt.join("evil.txt").exists(),
+        "another origin never matches"
+    );
+}
+
+#[tokio::test]
+async fn chat_resume_restores_a_detached_head_onto_the_checkout_branch() {
+    let s = start().await;
+    push_origin_branch(&s, "feature/pr-head", "pr.txt");
+    let (session, _ev) = s.connect().await;
+    let co = checkout("feature/pr-head", Some("refs/heads/feature/pr-head"));
+    let mut acp = open_on(&s, &session, co.clone()).await;
+    let sid = acp.start_session().await;
+    let wt = s.chat_worktrees()[0].clone();
+    // the agent detaches HEAD and commits there
+    git(&wt, &["checkout", "-q", "--detach"]);
+    std::fs::write(wt.join("detached.txt"), "x").unwrap();
+    git(&wt, &["add", "detached.txt"]);
+    git(&wt, &["commit", "-qm", "detached"]);
+    let saved = git_out(&wt, &["rev-parse", "HEAD"]).1;
+    drop(acp);
+    drop(session);
+    for _ in 0..100 {
+        if s.chats.live() == 0 && !wt.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!wt.exists());
+    let (session, _ev) = s.connect().await;
+    let ch = timeout(
+        T,
+        session.open_acp_checkout(Some(s.repo_url.clone()), Some(sid), None, co),
+    )
+    .await
+    .unwrap()
+    .expect("resume");
+    let _acp = Acp::new(ch);
+    assert!(
+        wt.join("detached.txt").exists(),
+        "the detached commit is back"
+    );
+    assert_eq!(git_out(&wt, &["rev-parse", "HEAD"]).1, saved);
+    assert_eq!(
+        head(&wt),
+        "feature/pr-head",
+        "on the checkout branch, not detached"
+    );
 }

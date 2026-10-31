@@ -55,6 +55,7 @@ export const OpenErrorCode = {
   ChatLimit: "chat_limit",
   NoCredential: "no_credential",
   RepoNotCloned: "repo_not_cloned",
+  CheckoutUnavailable: "checkout_unavailable",
   UnsupportedKind: "unsupported_kind",
   InvalidRequest: "invalid_request",
 } as const;

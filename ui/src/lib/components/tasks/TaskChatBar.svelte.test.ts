@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import type { AcpChannel, AcpSession } from '#lib/acp/connection.ts';
 import { fakeAgentChannel } from '#lib/test/acp-fake.ts';
+import type { RunDetail } from '#lib/runs.ts';
 import type { Task } from '#lib/tasks.ts';
 import TaskChatBar from './TaskChatBar.svelte';
 
@@ -34,6 +35,38 @@ const triaged: Task = {
 	at: '',
 	body: 'It crashes.'
 };
+
+const wait: Task = {
+	kind: 'wait',
+	key: 'run:r1',
+	project: 'alpha',
+	repo: 'acme/app',
+	number: 7,
+	title: 'Plan the fix',
+	githubUrl: null,
+	runUrl: null,
+	at: '',
+	runId: 'r1',
+	workflow: 'implement',
+	waitingFor: 'issue_comment.created',
+	until: null
+};
+const loadedRun = {
+	id: 'r1',
+	workflow: 'implement',
+	status: 'waiting',
+	reason: null,
+	nodeRuns: [
+		{
+			node: 'plan',
+			visit: 1,
+			status: 'done',
+			outputs: { plan: 'A' },
+			error: null,
+			git: [{ repo: 'acme/app', branch: 'ez/implement/reported', head_sha: 'x', pushed: false }]
+		}
+	]
+} as unknown as RunDetail;
 
 function setup(features: string[]) {
 	const ch = fakeAgentChannel({ sessionId: 's-1' });
@@ -79,7 +112,47 @@ describe('TaskChatBar', () => {
 		await vi.waitFor(() => expect(openAcp).toHaveBeenCalledTimes(2));
 		expect(openAcp).toHaveBeenLastCalledWith({
 			repo: 'https://github.com/acme/app.git',
-			checkout: { branch: 'enzarb/issue-12' }
+			checkout: { branch: 'enzarb/issue-12', create: true }
+		});
+	});
+
+	it("waits for a run task's run, then opens on the branch a node reported", async () => {
+		const { openAcp, connect } = setup(['acp', 'chat_checkout']);
+		const view = render(TaskChatBar, { task: wait, run: undefined, connect });
+		await expect.element(page.getByText('Loading the run…')).toBeVisible();
+		expect(connect).not.toHaveBeenCalled();
+		await view.rerender({ task: wait, run: loadedRun, connect });
+		await expect.element(page.getByRole('textbox', { name: 'Message' })).toBeEnabled();
+		expect(openAcp).toHaveBeenCalledTimes(1);
+		expect(openAcp).toHaveBeenCalledWith({
+			repo: 'https://github.com/acme/app.git',
+			checkout: { branch: 'ez/implement/reported' }
+		});
+	});
+
+	it('does not open a chat for a run that cannot be read', async () => {
+		const { connect } = setup(['acp', 'chat_checkout']);
+		render(TaskChatBar, { task: wait, run: null, connect });
+		await expect.element(page.getByText(/branch is not known/)).toBeVisible();
+		expect(connect).not.toHaveBeenCalled();
+	});
+
+	it('shows that the branch is not in the sandbox instead of a chat on other code', async () => {
+		const openAcp = vi.fn(async () => {
+			throw Object.assign(new Error('open rejected'), { openCode: 'checkout_unavailable' });
+		});
+		const s: AcpSession = { features: new Set(['acp', 'chat_checkout']), openAcp };
+		render(TaskChatBar, { task: review, connect: vi.fn(async () => s) });
+		await expect.element(page.getByText(/branch is not in the sandbox/).first()).toBeVisible();
+	});
+
+	it('asks to create a new branch only for an issue', async () => {
+		const { openAcp, connect } = setup(['acp', 'chat_checkout']);
+		render(TaskChatBar, { task: triaged, connect });
+		await expect.element(page.getByRole('textbox', { name: 'Message' })).toBeEnabled();
+		expect(openAcp).toHaveBeenCalledWith({
+			repo: 'https://github.com/acme/app.git',
+			checkout: { branch: 'enzarb/issue-12', create: true }
 		});
 	});
 });

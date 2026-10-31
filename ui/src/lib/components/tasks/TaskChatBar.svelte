@@ -25,6 +25,11 @@
 		connect?: ConnectionDeps['connect'];
 	} = $props();
 
+	const checkout = $derived(taskCheckout(task, run));
+	// `Chat` reads its checkout once per mount, so a run task waits for its run: the branch a node
+	// reported is not known before. The branch is also part of the key (a different one remounts).
+	const needsRun = $derived(task.kind === 'wait' || task.kind === 'failed');
+
 	let open = $state(false);
 	let count = 0;
 	function onItems(items: ChatItem[]) {
@@ -34,29 +39,37 @@
 	}
 </script>
 
-{#key task.key}
-	<div class="ez-taskchat" data-testid="task-chat-bar" data-open={open}>
-		<div class="ez-taskchat__bar">
-			<button
-				type="button"
-				class="ez-btn ez-btn--secondary ez-btn--sm"
-				aria-expanded={open}
-				onclick={() => (open = !open)}>{open ? 'Hide conversation' : 'Show conversation'}</button
-			>
-			<span class="ez-muted ez-taskchat__note"
-				>Changes stay in the sandbox until a run pushes them.</span
-			>
+{#if needsRun && run === undefined}
+	<p class="ez-muted" data-testid="task-chat-bar" role="status">Loading the run…</p>
+{:else if needsRun && run === null}
+	<p class="ez-muted" data-testid="task-chat-bar">
+		The run could not be read, so its branch is not known. Chat is unavailable for now.
+	</p>
+{:else}
+	{#key `${task.key}:${checkout.branch}`}
+		<div class="ez-taskchat" data-testid="task-chat-bar" data-open={open}>
+			<div class="ez-taskchat__bar">
+				<button
+					type="button"
+					class="ez-btn ez-btn--secondary ez-btn--sm"
+					aria-expanded={open}
+					onclick={() => (open = !open)}>{open ? 'Hide conversation' : 'Show conversation'}</button
+				>
+				<span class="ez-muted ez-taskchat__note"
+					>Changes stay in the sandbox until a run pushes them.</span
+				>
+			</div>
+			<Chat
+				project={task.project}
+				repo={cloneUrl(task.repo)}
+				{checkout}
+				storeKey={taskStoreKey(task)}
+				{connect}
+				wrapFirst={(text) => `${taskContextMessage(task, run)}\n\n${text}`}
+				hideContext={splitContext}
+				contextLabel="Context: the task and what its run did (show)"
+				{onItems}
+			/>
 		</div>
-		<Chat
-			project={task.project}
-			repo={cloneUrl(task.repo)}
-			checkout={taskCheckout(task, run)}
-			storeKey={taskStoreKey(task)}
-			{connect}
-			wrapFirst={(text) => `${taskContextMessage(task, run)}\n\n${text}`}
-			hideContext={splitContext}
-			contextLabel="Context: the task and what its run did (show)"
-			{onItems}
-		/>
-	</div>
-{/key}
+	{/key}
+{/if}

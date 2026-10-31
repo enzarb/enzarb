@@ -123,6 +123,11 @@ describe("open.checkout", () => {
     expect(v.message.checkout).toEqual({ branch: "ez/triage/run-7", start_ref: "refs/heads/main" });
     expect(parseCtrl(decodeFrame(fromHex(v.hex)))).toMatchObject({ type: "open", checkout: { branch: "ez/triage/run-7" } });
   });
+  it("a new branch is flagged create", () => {
+    const c = load("ctrl.json").find((x) => x.name === "open_acp_checkout_create")!;
+    expect(c.message.checkout).toEqual({ branch: "enzarb/issue-12", create: true });
+    expect(parseCtrl(decodeFrame(fromHex(c.hex)))).toMatchObject({ checkout: { create: true } });
+  });
   it("an old decoder (checkout stripped) still reads the open", () => {
     const { checkout: _c, ...old } = v.message as Record<string, unknown>;
     expect(asCtrl(old)).toMatchObject(old);
